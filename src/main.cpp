@@ -1,7 +1,6 @@
-#include <iostream>
-
-
 #include "runtime/args.hpp"
+#include "runtime/model_downloader.hpp"
+#include "model/model_config.hpp"
 
 #include <exception>
 #include <iostream>
@@ -10,7 +9,6 @@
 int main(int argc, char** argv) {
     try {
         lite_llm::Args args = lite_llm::parse_args(argc, argv);
-
         std::string device = args.device.value_or("auto");
 
         std::cout << "lite_llm config:\n";
@@ -22,6 +20,9 @@ int main(int argc, char** argv) {
         std::cout << "  Top-p:       " << args.top_p << "\n";
         std::cout << "  Device:      " << device << "\n";
 
+        auto model_files = lite_llm::ensure_model_files(args.model);
+        auto model_config = lite_llm::load_model_config(model_files.config_path);
+        lite_llm::print_model_config(model_config);
         // TODO:
         // Engine engine(args);
         // engine.generate();
@@ -32,4 +33,7 @@ int main(int argc, char** argv) {
         lite_llm::print_usage(argv[0]);
         return 1;
     }
+
+
+
 }

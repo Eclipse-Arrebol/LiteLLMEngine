@@ -1,5 +1,7 @@
 build/
 cmake-build-*/
+models/
+.cache/
 .vscode/
 *.o
 *.so
