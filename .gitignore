@@ -9,4 +9,6 @@ models/
 *.out
 *.log
 *.clangd
+*.idx
 .DS_Store
+
