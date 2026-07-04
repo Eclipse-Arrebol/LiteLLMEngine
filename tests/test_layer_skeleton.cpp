@@ -4,6 +4,7 @@
 #include "layers/embedding.hpp"
 #include "layers/linear.hpp"
 #include "layers/rms_norm.hpp"
+#include "layers/rotary.hpp"
 
 #include <iostream>
 #include <stdexcept>
@@ -61,6 +62,13 @@ int main() {
         expect(norm.hidden_size() == 4, "RMSNorm hidden_size mismatch");
         expect(norm.eps() == 1e-6f, "RMSNorm eps mismatch");
         expect(std::string(norm.name()) == "RMSNorm", "RMSNorm name mismatch");
+
+        lite_llm::RotaryEmbedding rotary(4, 1000000.0f);
+
+        expect(rotary.initialized(), "RotaryEmbedding should be initialized");
+        expect(rotary.head_dim() == 4, "RotaryEmbedding head_dim mismatch");
+        expect(rotary.rope_theta() == 1000000.0f, "RotaryEmbedding rope_theta mismatch");
+        expect(std::string(rotary.name()) == "RotaryEmbedding", "RotaryEmbedding name mismatch");
 
         std::cout << "[test_layer_skeleton] passed" << std::endl;
 
