@@ -34,6 +34,25 @@ RMSNorm::RMSNorm(Tensor weight, float eps)
     }
 }
 
+void RMSNorm::load_weight(Tensor weight) {
+    if (weight.shape().size() != 1) {
+        throw std::runtime_error("RMSNorm weight must be 1D");
+    }
+
+    if (weight.dtype() != DType::FP32) {
+        throw std::runtime_error("RMSNorm weight must be FP32");
+    }
+
+    int64_t hidden_size = weight.shape()[0];
+
+    if (hidden_size <= 0) {
+        throw std::runtime_error("RMSNorm got invalid hidden_size");
+    }
+
+    weight_ = std::move(weight);
+    hidden_size_ = hidden_size;
+}
+
 void RMSNorm::forward(const Tensor& input, Tensor& output) const {
     if (!initialized()) {
         throw std::runtime_error("RMSNorm::forward called before weight is initialized");

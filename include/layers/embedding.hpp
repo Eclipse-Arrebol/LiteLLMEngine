@@ -22,6 +22,8 @@ public:
         return "Embedding";
     }
 
+    void load_weight(Tensor weight);
+    
     void forward(const Tensor& input_ids, Tensor& output) const override;
 
     int64_t vocab_size() const {

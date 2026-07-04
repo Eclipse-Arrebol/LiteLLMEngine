@@ -23,6 +23,8 @@ public:
         return "RMSNorm";
     }
 
+    void load_weight(Tensor weight);
+
     void forward(const Tensor& input, Tensor& output) const override;
 
     float eps() const {

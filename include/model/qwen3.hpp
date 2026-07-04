@@ -8,9 +8,11 @@
 #include "layers/rotary.hpp"
 #include "model/model_config.hpp"
 #include "runtime/forward_context.hpp"
+#include "weights/weight_map.hpp"
 
 #include <cstdint>
 #include <vector>
+#include <string>
 
 namespace lite_llm {
 
@@ -37,6 +39,8 @@ public:
     }
 
     void forward(const Tensor& hidden_states, Tensor& output) const;
+
+    void load_weights(WeightMap& weights, const std::string& prefix);
 
     int64_t hidden_size() const {
         return hidden_size_;
@@ -83,6 +87,8 @@ public:
         const ForwardContext& context,
         Tensor& output
     ) const;
+
+    void load_weights(WeightMap& weights, const std::string& prefix);
 
     int64_t hidden_size() const {
         return hidden_size_;
@@ -143,6 +149,8 @@ public:
         Tensor& output
     ) const;
 
+    void load_weights(WeightMap& weights, const std::string& prefix);
+
 private:
     Qwen3Attention self_attn_;
     Qwen3MLP mlp_;
@@ -174,6 +182,8 @@ public:
         const ForwardContext& context,
         Tensor& hidden_states
     ) const;
+
+    void load_weights(WeightMap& weights);
 
     int64_t num_layers() const {
         return static_cast<int64_t>(layers_.size());
@@ -217,6 +227,8 @@ public:
         Tensor& logits
     ) const;
 
+    void load_weights(WeightMap& weights);
+    
     const ModelConfig& config() const {
         return config_;
     }

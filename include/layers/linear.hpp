@@ -23,6 +23,9 @@ public:
         return "Linear";
     }
 
+    void load_weight(Tensor weight);
+    void load_bias(Tensor bias);
+
     void forward(const Tensor& input, Tensor& output) const override;
 
     bool has_bias() const {

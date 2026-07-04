@@ -23,6 +23,27 @@ Embedding::Embedding(Tensor weight)
     }
 }
 
+void Embedding::load_weight(Tensor weight) {
+    if (weight.shape().size() != 2) {
+        throw std::runtime_error("Embedding weight must be 2D");
+    }
+
+    if (weight.dtype() != DType::FP32) {
+        throw std::runtime_error("Embedding weight must be FP32");
+    }
+
+    int64_t vocab_size = weight.shape()[0];
+    int64_t hidden_size = weight.shape()[1];
+
+    if (vocab_size <= 0 || hidden_size <= 0) {
+        throw std::runtime_error("Embedding got invalid weight shape");
+    }
+
+    weight_ = std::move(weight);
+    vocab_size_ = vocab_size;
+    hidden_size_ = hidden_size;
+}
+
 void Embedding::forward(const Tensor& input_ids, Tensor& output) const {
     if (!initialized()) {
         throw std::runtime_error("Embedding::forward called before weight is initialized");

@@ -1,6 +1,7 @@
 #include "model/qwen3.hpp"
 
 #include <stdexcept>
+#include <string>
 
 namespace lite_llm {
 
@@ -66,6 +67,27 @@ Qwen3MLP::Qwen3MLP(const ModelConfig& config)
     }
 }
 
+void Qwen3MLP::load_weights(WeightMap& weights, const std::string& prefix) {
+    gate_proj_.load_weight(weights.take(prefix + ".gate_proj.weight"));
+    up_proj_.load_weight(weights.take(prefix + ".up_proj.weight"));
+    down_proj_.load_weight(weights.take(prefix + ".down_proj.weight"));
+
+    if (gate_proj_.in_features() != hidden_size_ ||
+        gate_proj_.out_features() != intermediate_size_) {
+        throw std::runtime_error("Qwen3MLP gate_proj weight shape mismatch");
+    }
+
+    if (up_proj_.in_features() != hidden_size_ ||
+        up_proj_.out_features() != intermediate_size_) {
+        throw std::runtime_error("Qwen3MLP up_proj weight shape mismatch");
+    }
+
+    if (down_proj_.in_features() != intermediate_size_ ||
+        down_proj_.out_features() != hidden_size_) {
+        throw std::runtime_error("Qwen3MLP down_proj weight shape mismatch");
+    }
+}
+
 void Qwen3MLP::forward(const Tensor& hidden_states, Tensor& output) const {
     if (!initialized()) {
         throw std::runtime_error("Qwen3MLP::forward called before weights are initialized");
@@ -103,6 +125,36 @@ Qwen3Attention::Qwen3Attention(const ModelConfig& config)
     }
 }
 
+void Qwen3Attention::load_weights(WeightMap& weights, const std::string& prefix) {
+    q_proj_.load_weight(weights.take(prefix + ".q_proj.weight"));
+    k_proj_.load_weight(weights.take(prefix + ".k_proj.weight"));
+    v_proj_.load_weight(weights.take(prefix + ".v_proj.weight"));
+    o_proj_.load_weight(weights.take(prefix + ".o_proj.weight"));
+
+    int64_t q_out = num_attention_heads_ * head_dim_;
+    int64_t kv_out = num_key_value_heads_ * head_dim_;
+
+    if (q_proj_.in_features() != hidden_size_ ||
+        q_proj_.out_features() != q_out) {
+        throw std::runtime_error("Qwen3Attention q_proj weight shape mismatch");
+    }
+
+    if (k_proj_.in_features() != hidden_size_ ||
+        k_proj_.out_features() != kv_out) {
+        throw std::runtime_error("Qwen3Attention k_proj weight shape mismatch");
+    }
+
+    if (v_proj_.in_features() != hidden_size_ ||
+        v_proj_.out_features() != kv_out) {
+        throw std::runtime_error("Qwen3Attention v_proj weight shape mismatch");
+    }
+
+    if (o_proj_.in_features() != q_out ||
+        o_proj_.out_features() != hidden_size_) {
+        throw std::runtime_error("Qwen3Attention o_proj weight shape mismatch");
+    }
+}
+
 void Qwen3Attention::forward(
     const Tensor& hidden_states,
     const ForwardContext& context,
@@ -124,6 +176,26 @@ Qwen3DecoderLayer::Qwen3DecoderLayer(const ModelConfig& config)
       mlp_(config),
       input_layernorm_(config.rms_norm_eps),
       post_attention_layernorm_(config.rms_norm_eps) {
+}
+
+void Qwen3DecoderLayer::load_weights(WeightMap& weights, const std::string& prefix) {
+    input_layernorm_.load_weight(
+        weights.take(prefix + ".input_layernorm.weight")
+    );
+
+    self_attn_.load_weights(
+        weights,
+        prefix + ".self_attn"
+    );
+
+    post_attention_layernorm_.load_weight(
+        weights.take(prefix + ".post_attention_layernorm.weight")
+    );
+
+    mlp_.load_weights(
+        weights,
+        prefix + ".mlp"
+    );
 }
 
 void Qwen3DecoderLayer::forward(
@@ -152,6 +224,32 @@ Qwen3Model::Qwen3Model(const ModelConfig& config)
 
     for (int i = 0; i < config_.num_hidden_layers; ++i) {
         layers_.emplace_back(config_);
+    }
+}
+
+void Qwen3Model::load_weights(WeightMap& weights) {
+    embed_tokens_.load_weight(
+        weights.take("model.embed_tokens.weight")
+    );
+
+    for (int i = 0; i < config_.num_hidden_layers; ++i) {
+        layers_[static_cast<size_t>(i)].load_weights(
+            weights,
+            "model.layers." + std::to_string(i)
+        );
+    }
+
+    norm_.load_weight(
+        weights.take("model.norm.weight")
+    );
+
+    if (embed_tokens_.vocab_size() != config_.vocab_size ||
+        embed_tokens_.hidden_size() != config_.hidden_size) {
+        throw std::runtime_error("Qwen3Model embed_tokens weight shape mismatch");
+    }
+
+    if (norm_.hidden_size() != config_.hidden_size) {
+        throw std::runtime_error("Qwen3Model norm weight shape mismatch");
     }
 }
 
@@ -194,6 +292,23 @@ Qwen3ForCausalLM::Qwen3ForCausalLM(const ModelConfig& config)
       model_(config),
       lm_head_() {
     check_qwen3_config(config_);
+}
+
+void Qwen3ForCausalLM::load_weights(WeightMap& weights) {
+    model_.load_weights(weights);
+
+    if (config_.tie_word_embeddings) {
+        throw std::runtime_error("tie_word_embeddings=true is not supported yet");
+    }
+
+    lm_head_.load_weight(
+        weights.take("lm_head.weight")
+    );
+
+    if (lm_head_.in_features() != config_.hidden_size ||
+        lm_head_.out_features() != config_.vocab_size) {
+        throw std::runtime_error("Qwen3ForCausalLM lm_head weight shape mismatch");
+    }
 }
 
 void Qwen3ForCausalLM::forward(

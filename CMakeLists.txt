@@ -82,6 +82,7 @@ target_link_libraries(test_layer_skeleton PRIVATE
 )
 add_test(NAME test_layer_skeleton COMMAND test_layer_skeleton)
 
+
 add_executable(test_model_skeleton
     ${CMAKE_SOURCE_DIR}/tests/test_model_skeleton.cpp
 )
@@ -89,3 +90,12 @@ target_link_libraries(test_model_skeleton PRIVATE
     litellm_engine_core
 )
 add_test(NAME test_model_skeleton COMMAND test_model_skeleton)
+
+
+add_executable(test_weight_loading_skeleton
+    ${CMAKE_SOURCE_DIR}/tests/test_weight_loading_skeleton.cpp
+)
+target_link_libraries(test_weight_loading_skeleton PRIVATE
+    litellm_engine_core
+)
+add_test(NAME test_weight_loading_skeleton COMMAND test_weight_loading_skeleton)
