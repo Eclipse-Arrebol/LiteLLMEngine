@@ -59,21 +59,25 @@ enable_testing()
 add_executable(test_tensor
     ${CMAKE_SOURCE_DIR}/tests/test_tensor.cpp
 )
-
 target_link_libraries(test_tensor PRIVATE
     litellm_engine_core
 )
-
 add_test(NAME test_tensor COMMAND test_tensor)
-
 
 
 add_executable(test_add
     ${CMAKE_SOURCE_DIR}/tests/test_add.cpp
 )
-
 target_link_libraries(test_add PRIVATE
     litellm_engine_core
 )
-
 add_test(NAME test_add COMMAND test_add)
+
+
+add_executable(test_layer_skeleton
+    ${CMAKE_SOURCE_DIR}/tests/test_layer_skeleton.cpp
+)
+target_link_libraries(test_layer_skeleton PRIVATE
+    litellm_engine_core
+)
+add_test(NAME test_layer_skeleton COMMAND test_layer_skeleton)
