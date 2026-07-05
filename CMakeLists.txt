@@ -117,3 +117,8 @@ target_link_libraries(test_real_qwen3_weight_loading PRIVATE
     litellm_engine_core
 )
 add_test(NAME test_real_qwen3_weight_loading COMMAND test_real_qwen3_weight_loading)
+
+
+add_executable(test_embedding tests/test_embedding.cpp)
+target_link_libraries(test_embedding PRIVATE litellm_engine_core)
+add_test(NAME test_embedding COMMAND test_embedding)
