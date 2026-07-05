@@ -127,3 +127,8 @@ add_test(NAME test_embedding COMMAND test_embedding)
 add_executable(test_rms_norm tests/test_rms_norm.cpp)
 target_link_libraries(test_rms_norm PRIVATE litellm_engine_core)
 add_test(NAME test_rms_norm COMMAND test_rms_norm)
+
+
+add_executable(test_linear tests/test_linear.cpp)
+target_link_libraries(test_linear PRIVATE litellm_engine_core)
+add_test(NAME test_linear COMMAND test_linear)
