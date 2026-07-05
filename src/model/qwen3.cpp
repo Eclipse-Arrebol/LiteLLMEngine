@@ -568,14 +568,98 @@ void Qwen3Model::forward(
     Tensor& hidden_states
 ) const {
     if (!initialized()) {
-        throw std::runtime_error("Qwen3Model::forward called before weights are initialized");
+        throw std::runtime_error(
+            "Qwen3Model::forward called before weights are initialized"
+        );
     }
 
-    (void)input_ids;
-    (void)context;
-    (void)hidden_states;
+    if (context.position_ids == nullptr) {
+        throw std::runtime_error("Qwen3Model ForwardContext.position_ids is null");
+    }
 
-    throw std::runtime_error("Qwen3Model::forward not implemented yet");
+    if (input_ids.dtype() != DType::INT32) {
+        throw std::runtime_error("Qwen3Model input_ids must be INT32");
+    }
+
+    if (hidden_states.dtype() != DType::FP32) {
+        throw std::runtime_error("Qwen3Model hidden_states must be FP32");
+    }
+
+    if (input_ids.shape().size() != 1) {
+        throw std::runtime_error("Qwen3Model input_ids must be 1D: [num_tokens]");
+    }
+
+    if (hidden_states.shape().size() != 2) {
+        throw std::runtime_error(
+            "Qwen3Model hidden_states must be 2D: [num_tokens, hidden_size]"
+        );
+    }
+
+    const Tensor& position_ids = *context.position_ids;
+
+    if (position_ids.dtype() != DType::INT32) {
+        throw std::runtime_error("Qwen3Model position_ids must be INT32");
+    }
+
+    if (position_ids.shape().size() != 1) {
+        throw std::runtime_error("Qwen3Model position_ids must be 1D: [num_tokens]");
+    }
+
+    const int64_t num_tokens = input_ids.shape()[0];
+    const int64_t hidden_size = config_.hidden_size;
+
+    if (context.seq_len != 0 && context.seq_len != num_tokens) {
+        throw std::runtime_error("Qwen3Model context.seq_len mismatch");
+    }
+
+    if (position_ids.shape()[0] != num_tokens) {
+        throw std::runtime_error("Qwen3Model position_ids shape mismatch");
+    }
+
+    if (hidden_states.shape()[0] != num_tokens ||
+        hidden_states.shape()[1] != hidden_size) {
+        throw std::runtime_error("Qwen3Model hidden_states shape mismatch");
+    }
+
+    if (input_ids.device() != position_ids.device() ||
+        input_ids.device() != hidden_states.device()) {
+        throw std::runtime_error(
+            "Qwen3Model input_ids, position_ids and hidden_states must be on same device"
+        );
+    }
+
+    const Device device = input_ids.device();
+
+    Tensor hidden_a(
+        {num_tokens, hidden_size},
+        DType::FP32,
+        device
+    );
+
+    Tensor hidden_b(
+        {num_tokens, hidden_size},
+        DType::FP32,
+        device
+    );
+
+    embed_tokens_.forward(input_ids, hidden_a);
+
+    const Tensor* current = &hidden_a;
+    Tensor* next = &hidden_b;
+
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        layers_[i].forward(*current, context, *next);
+
+        if (current == &hidden_a) {
+            current = &hidden_b;
+            next = &hidden_a;
+        } else {
+            current = &hidden_a;
+            next = &hidden_b;
+        }
+    }
+
+    norm_.forward(*current, hidden_states);
 }
 
 Qwen3ForCausalLM::Qwen3ForCausalLM(const ModelConfig& config)

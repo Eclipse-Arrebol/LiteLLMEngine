@@ -1,0 +1,953 @@
+#include "model/qwen3.hpp"
+#include "weights/weight_map.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+using namespace lite_llm;
+
+namespace {
+
+void check_close(float a, float b, float tol = 5e-4f) {
+    if (std::fabs(a - b) > tol) {
+        throw std::runtime_error(
+            "check_close failed: got " + std::to_string(a) +
+            ", expected " + std::to_string(b)
+        );
+    }
+}
+
+int64_t offset3(
+    int64_t token,
+    int64_t head,
+    int64_t dim,
+    int64_t num_heads,
+    int64_t head_dim
+) {
+    return (token * num_heads + head) * head_dim + dim;
+}
+
+std::vector<float> embedding_ref(
+    const std::vector<int32_t>& input_ids,
+    const std::vector<float>& embed_weight,
+    int64_t vocab_size,
+    int64_t hidden_size
+) {
+    std::vector<float> output(input_ids.size() * hidden_size, 0.0f);
+
+    for (size_t token = 0; token < input_ids.size(); ++token) {
+        const int32_t token_id = input_ids[token];
+
+        if (token_id < 0 || token_id >= vocab_size) {
+            throw std::runtime_error("embedding_ref token id out of range");
+        }
+
+        for (int64_t h = 0; h < hidden_size; ++h) {
+            output[static_cast<int64_t>(token) * hidden_size + h] =
+                embed_weight[static_cast<int64_t>(token_id) * hidden_size + h];
+        }
+    }
+
+    return output;
+}
+
+std::vector<float> add_ref(
+    const std::vector<float>& a,
+    const std::vector<float>& b
+) {
+    if (a.size() != b.size()) {
+        throw std::runtime_error("add_ref size mismatch");
+    }
+
+    std::vector<float> out(a.size(), 0.0f);
+
+    for (size_t i = 0; i < a.size(); ++i) {
+        out[i] = a[i] + b[i];
+    }
+
+    return out;
+}
+
+std::vector<float> linear_ref(
+    const std::vector<float>& input,
+    const std::vector<float>& weight,
+    int64_t m,
+    int64_t in_features,
+    int64_t out_features
+) {
+    std::vector<float> output(m * out_features, 0.0f);
+
+    for (int64_t row = 0; row < m; ++row) {
+        for (int64_t out_col = 0; out_col < out_features; ++out_col) {
+            float sum = 0.0f;
+
+            for (int64_t k = 0; k < in_features; ++k) {
+                sum += input[row * in_features + k] *
+                       weight[out_col * in_features + k];
+            }
+
+            output[row * out_features + out_col] = sum;
+        }
+    }
+
+    return output;
+}
+
+std::vector<float> rms_norm_ref(
+    const std::vector<float>& input,
+    const std::vector<float>& weight,
+    int64_t rows,
+    int64_t hidden_size,
+    float eps
+) {
+    std::vector<float> output(input.size(), 0.0f);
+
+    for (int64_t row = 0; row < rows; ++row) {
+        const int64_t base = row * hidden_size;
+
+        float sum_sq = 0.0f;
+        for (int64_t d = 0; d < hidden_size; ++d) {
+            const float v = input[base + d];
+            sum_sq += v * v;
+        }
+
+        const float inv_rms =
+            1.0f / std::sqrt(sum_sq / static_cast<float>(hidden_size) + eps);
+
+        for (int64_t d = 0; d < hidden_size; ++d) {
+            output[base + d] = input[base + d] * inv_rms * weight[d];
+        }
+    }
+
+    return output;
+}
+
+std::vector<float> rotary_ref(
+    const std::vector<float>& input,
+    const std::vector<int32_t>& position_ids,
+    int64_t num_tokens,
+    int64_t num_heads,
+    int64_t head_dim,
+    float rope_theta
+) {
+    std::vector<float> output(input.size(), 0.0f);
+
+    const int64_t half_dim = head_dim / 2;
+
+    for (int64_t token = 0; token < num_tokens; ++token) {
+        const int32_t pos = position_ids[token];
+
+        for (int64_t head = 0; head < num_heads; ++head) {
+            const int64_t base = (token * num_heads + head) * head_dim;
+
+            for (int64_t i = 0; i < half_dim; ++i) {
+                const float inv_freq = std::pow(
+                    rope_theta,
+                    -static_cast<float>(2 * i) / static_cast<float>(head_dim)
+                );
+
+                const float angle = static_cast<float>(pos) * inv_freq;
+                const float c = std::cos(angle);
+                const float s = std::sin(angle);
+
+                const float x1 = input[base + i];
+                const float x2 = input[base + i + half_dim];
+
+                output[base + i] = x1 * c - x2 * s;
+                output[base + i + half_dim] = x2 * c + x1 * s;
+            }
+        }
+    }
+
+    return output;
+}
+
+std::vector<float> attention_ref(
+    const std::vector<float>& q,
+    const std::vector<float>& k,
+    const std::vector<float>& v,
+    int64_t num_tokens,
+    int64_t num_q_heads,
+    int64_t num_kv_heads,
+    int64_t head_dim
+) {
+    std::vector<float> output(
+        num_tokens * num_q_heads * head_dim,
+        0.0f
+    );
+
+    const int64_t group_size = num_q_heads / num_kv_heads;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    std::vector<float> scores(num_tokens, 0.0f);
+
+    for (int64_t token = 0; token < num_tokens; ++token) {
+        for (int64_t q_head = 0; q_head < num_q_heads; ++q_head) {
+            const int64_t kv_head = q_head / group_size;
+
+            float max_score = -std::numeric_limits<float>::infinity();
+
+            for (int64_t key_token = 0; key_token <= token; ++key_token) {
+                float dot = 0.0f;
+
+                for (int64_t d = 0; d < head_dim; ++d) {
+                    dot += q[offset3(token, q_head, d, num_q_heads, head_dim)] *
+                           k[offset3(key_token, kv_head, d, num_kv_heads, head_dim)];
+                }
+
+                const float score = dot * scale;
+                scores[key_token] = score;
+                max_score = std::max(max_score, score);
+            }
+
+            float sum_exp = 0.0f;
+
+            for (int64_t key_token = 0; key_token <= token; ++key_token) {
+                const float e = std::exp(scores[key_token] - max_score);
+                scores[key_token] = e;
+                sum_exp += e;
+            }
+
+            for (int64_t d = 0; d < head_dim; ++d) {
+                float out = 0.0f;
+
+                for (int64_t key_token = 0; key_token <= token; ++key_token) {
+                    const float prob = scores[key_token] / sum_exp;
+
+                    out += prob *
+                           v[offset3(key_token, kv_head, d, num_kv_heads, head_dim)];
+                }
+
+                output[offset3(token, q_head, d, num_q_heads, head_dim)] = out;
+            }
+        }
+    }
+
+    return output;
+}
+
+float silu_ref(float x) {
+    return x / (1.0f + std::exp(-x));
+}
+
+std::vector<float> mlp_ref(
+    const std::vector<float>& input,
+    const std::vector<float>& gate_weight,
+    const std::vector<float>& up_weight,
+    const std::vector<float>& down_weight,
+    int64_t num_tokens,
+    int64_t hidden_size,
+    int64_t intermediate_size
+) {
+    std::vector<float> gate = linear_ref(
+        input,
+        gate_weight,
+        num_tokens,
+        hidden_size,
+        intermediate_size
+    );
+
+    std::vector<float> up = linear_ref(
+        input,
+        up_weight,
+        num_tokens,
+        hidden_size,
+        intermediate_size
+    );
+
+    std::vector<float> act(num_tokens * intermediate_size, 0.0f);
+
+    for (size_t i = 0; i < act.size(); ++i) {
+        act[i] = silu_ref(gate[i]) * up[i];
+    }
+
+    return linear_ref(
+        act,
+        down_weight,
+        num_tokens,
+        intermediate_size,
+        hidden_size
+    );
+}
+
+std::vector<float> attention_block_ref(
+    const std::vector<float>& hidden_states,
+    const std::vector<int32_t>& position_ids,
+    const std::vector<float>& q_weight,
+    const std::vector<float>& k_weight,
+    const std::vector<float>& v_weight,
+    const std::vector<float>& o_weight,
+    const std::vector<float>& q_norm_weight,
+    const std::vector<float>& k_norm_weight,
+    int64_t num_tokens,
+    int64_t hidden_size,
+    int64_t num_q_heads,
+    int64_t num_kv_heads,
+    int64_t head_dim,
+    float rms_norm_eps,
+    float rope_theta
+) {
+    const int64_t q_size = num_q_heads * head_dim;
+    const int64_t kv_size = num_kv_heads * head_dim;
+
+    std::vector<float> q_flat = linear_ref(
+        hidden_states,
+        q_weight,
+        num_tokens,
+        hidden_size,
+        q_size
+    );
+
+    std::vector<float> k_flat = linear_ref(
+        hidden_states,
+        k_weight,
+        num_tokens,
+        hidden_size,
+        kv_size
+    );
+
+    std::vector<float> v_flat = linear_ref(
+        hidden_states,
+        v_weight,
+        num_tokens,
+        hidden_size,
+        kv_size
+    );
+
+    std::vector<float> q_normed = rms_norm_ref(
+        q_flat,
+        q_norm_weight,
+        num_tokens * num_q_heads,
+        head_dim,
+        rms_norm_eps
+    );
+
+    std::vector<float> k_normed = rms_norm_ref(
+        k_flat,
+        k_norm_weight,
+        num_tokens * num_kv_heads,
+        head_dim,
+        rms_norm_eps
+    );
+
+    std::vector<float> q_rot = rotary_ref(
+        q_normed,
+        position_ids,
+        num_tokens,
+        num_q_heads,
+        head_dim,
+        rope_theta
+    );
+
+    std::vector<float> k_rot = rotary_ref(
+        k_normed,
+        position_ids,
+        num_tokens,
+        num_kv_heads,
+        head_dim,
+        rope_theta
+    );
+
+    std::vector<float> attn_out = attention_ref(
+        q_rot,
+        k_rot,
+        v_flat,
+        num_tokens,
+        num_q_heads,
+        num_kv_heads,
+        head_dim
+    );
+
+    return linear_ref(
+        attn_out,
+        o_weight,
+        num_tokens,
+        q_size,
+        hidden_size
+    );
+}
+
+std::vector<float> decoder_layer_ref(
+    const std::vector<float>& hidden_states,
+    const std::vector<int32_t>& position_ids,
+    const std::vector<float>& input_ln_weight,
+    const std::vector<float>& post_attn_ln_weight,
+    const std::vector<float>& q_weight,
+    const std::vector<float>& k_weight,
+    const std::vector<float>& v_weight,
+    const std::vector<float>& o_weight,
+    const std::vector<float>& q_norm_weight,
+    const std::vector<float>& k_norm_weight,
+    const std::vector<float>& gate_weight,
+    const std::vector<float>& up_weight,
+    const std::vector<float>& down_weight,
+    int64_t num_tokens,
+    int64_t hidden_size,
+    int64_t num_q_heads,
+    int64_t num_kv_heads,
+    int64_t head_dim,
+    int64_t intermediate_size,
+    float rms_norm_eps,
+    float rope_theta
+) {
+    std::vector<float> normed_1 = rms_norm_ref(
+        hidden_states,
+        input_ln_weight,
+        num_tokens,
+        hidden_size,
+        rms_norm_eps
+    );
+
+    std::vector<float> attn_out = attention_block_ref(
+        normed_1,
+        position_ids,
+        q_weight,
+        k_weight,
+        v_weight,
+        o_weight,
+        q_norm_weight,
+        k_norm_weight,
+        num_tokens,
+        hidden_size,
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+        rms_norm_eps,
+        rope_theta
+    );
+
+    std::vector<float> residual_after_attn = add_ref(
+        hidden_states,
+        attn_out
+    );
+
+    std::vector<float> normed_2 = rms_norm_ref(
+        residual_after_attn,
+        post_attn_ln_weight,
+        num_tokens,
+        hidden_size,
+        rms_norm_eps
+    );
+
+    std::vector<float> mlp_out = mlp_ref(
+        normed_2,
+        gate_weight,
+        up_weight,
+        down_weight,
+        num_tokens,
+        hidden_size,
+        intermediate_size
+    );
+
+    return add_ref(residual_after_attn, mlp_out);
+}
+
+Tensor make_float_tensor(
+    const std::vector<int64_t>& shape,
+    const std::vector<float>& data,
+    Device device
+) {
+    Tensor tensor(shape, DType::FP32, device);
+    tensor.copy_from_cpu(data.data(), data.size() * sizeof(float));
+    return tensor;
+}
+
+Tensor make_int_tensor(
+    const std::vector<int64_t>& shape,
+    const std::vector<int32_t>& data,
+    Device device
+) {
+    Tensor tensor(shape, DType::INT32, device);
+    tensor.copy_from_cpu(data.data(), data.size() * sizeof(int32_t));
+    return tensor;
+}
+
+ModelConfig make_test_config() {
+    ModelConfig config;
+    config.model_type = "qwen3";
+
+    config.vocab_size = 5;
+    config.hidden_size = 3;
+    config.intermediate_size = 4;
+    config.num_hidden_layers = 1;
+
+    config.num_attention_heads = 2;
+    config.num_key_value_heads = 1;
+    config.head_dim = 2;
+
+    config.max_position_embeddings = 16;
+    config.rms_norm_eps = 1e-6f;
+    config.rope_theta = 10000.0f;
+    config.tie_word_embeddings = false;
+
+    return config;
+}
+
+WeightMap make_test_weights(
+    const std::vector<float>& embed_weight,
+    const std::vector<float>& input_ln_weight,
+    const std::vector<float>& post_attn_ln_weight,
+    const std::vector<float>& q_weight,
+    const std::vector<float>& k_weight,
+    const std::vector<float>& v_weight,
+    const std::vector<float>& o_weight,
+    const std::vector<float>& q_norm_weight,
+    const std::vector<float>& k_norm_weight,
+    const std::vector<float>& gate_weight,
+    const std::vector<float>& up_weight,
+    const std::vector<float>& down_weight,
+    const std::vector<float>& final_norm_weight,
+    Device device
+) {
+    WeightMap weights;
+
+    weights.add(
+        "model.embed_tokens.weight",
+        make_float_tensor({5, 3}, embed_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.input_layernorm.weight",
+        make_float_tensor({3}, input_ln_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.self_attn.q_proj.weight",
+        make_float_tensor({4, 3}, q_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.self_attn.k_proj.weight",
+        make_float_tensor({2, 3}, k_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.self_attn.v_proj.weight",
+        make_float_tensor({2, 3}, v_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.self_attn.o_proj.weight",
+        make_float_tensor({3, 4}, o_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.self_attn.q_norm.weight",
+        make_float_tensor({2}, q_norm_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.self_attn.k_norm.weight",
+        make_float_tensor({2}, k_norm_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.post_attention_layernorm.weight",
+        make_float_tensor({3}, post_attn_ln_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.mlp.gate_proj.weight",
+        make_float_tensor({4, 3}, gate_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.mlp.up_proj.weight",
+        make_float_tensor({4, 3}, up_weight, device)
+    );
+
+    weights.add(
+        "model.layers.0.mlp.down_proj.weight",
+        make_float_tensor({3, 4}, down_weight, device)
+    );
+
+    weights.add(
+        "model.norm.weight",
+        make_float_tensor({3}, final_norm_weight, device)
+    );
+
+    return weights;
+}
+
+void run_qwen3_model_test(Device device) {
+    const std::string device_name = device == Device::CPU ? "cpu" : "cuda";
+
+    std::cout << "[test_qwen3_model_" << device_name << "] start\n";
+
+    constexpr int64_t num_tokens = 3;
+    constexpr int64_t vocab_size = 5;
+    constexpr int64_t hidden_size = 3;
+    constexpr int64_t num_q_heads = 2;
+    constexpr int64_t num_kv_heads = 1;
+    constexpr int64_t head_dim = 2;
+    constexpr int64_t intermediate_size = 4;
+    constexpr float rms_norm_eps = 1e-6f;
+    constexpr float rope_theta = 10000.0f;
+
+    std::vector<int32_t> input_ids_cpu = {
+        2, 0, 3,
+    };
+
+    std::vector<int32_t> position_ids_cpu = {
+        0, 1, 2,
+    };
+
+    // embed_tokens.weight: [vocab_size, hidden_size] = [5, 3]
+    std::vector<float> embed_weight = {
+         0.5f, -1.0f,  1.5f,
+         1.0f,  0.0f, -0.5f,
+        -1.0f,  2.0f,  0.25f,
+         0.0f, -0.75f, 1.25f,
+         2.0f,  1.0f, -1.5f,
+    };
+
+    std::vector<float> input_ln_weight = {
+        1.0f, 0.75f, 1.25f,
+    };
+
+    std::vector<float> post_attn_ln_weight = {
+        0.8f, 1.1f, 0.9f,
+    };
+
+    std::vector<float> q_weight = {
+         0.5f, -1.0f,  0.25f,
+         1.0f,  0.0f, -0.5f,
+        -0.75f, 0.5f,  1.0f,
+         2.0f, -1.0f,  0.0f,
+    };
+
+    std::vector<float> k_weight = {
+         1.0f,  0.5f, -1.0f,
+        -0.5f,  1.5f,  0.25f,
+    };
+
+    std::vector<float> v_weight = {
+         0.25f, -1.0f,  2.0f,
+         1.5f,   0.0f, -0.5f,
+    };
+
+    std::vector<float> o_weight = {
+         1.0f, -0.5f,  0.25f,  2.0f,
+        -1.0f,  1.5f,  0.5f,  -0.25f,
+         0.0f,  0.75f, -1.0f,  1.0f,
+    };
+
+    std::vector<float> q_norm_weight = {
+        1.0f, 1.5f,
+    };
+
+    std::vector<float> k_norm_weight = {
+        0.75f, 1.25f,
+    };
+
+    std::vector<float> gate_weight = {
+         0.5f, -1.0f,  0.25f,
+         1.0f,  0.0f, -0.5f,
+        -0.75f, 0.5f,  1.0f,
+         2.0f, -1.0f,  0.0f,
+    };
+
+    std::vector<float> up_weight = {
+         1.0f,  2.0f, -1.0f,
+        -0.5f,  0.25f, 1.5f,
+         2.0f, -1.0f,  0.5f,
+         0.0f,  1.0f, -2.0f,
+    };
+
+    std::vector<float> down_weight = {
+         1.0f, -1.0f,  0.5f,  2.0f,
+         0.0f,  1.5f, -0.5f,  1.0f,
+        -1.0f,  0.25f, 1.0f, -0.75f,
+    };
+
+    std::vector<float> final_norm_weight = {
+        1.2f, 0.9f, 1.1f,
+    };
+
+    std::vector<float> embedded = embedding_ref(
+        input_ids_cpu,
+        embed_weight,
+        vocab_size,
+        hidden_size
+    );
+
+    std::vector<float> decoder_out = decoder_layer_ref(
+        embedded,
+        position_ids_cpu,
+        input_ln_weight,
+        post_attn_ln_weight,
+        q_weight,
+        k_weight,
+        v_weight,
+        o_weight,
+        q_norm_weight,
+        k_norm_weight,
+        gate_weight,
+        up_weight,
+        down_weight,
+        num_tokens,
+        hidden_size,
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+        intermediate_size,
+        rms_norm_eps,
+        rope_theta
+    );
+
+    std::vector<float> expected = rms_norm_ref(
+        decoder_out,
+        final_norm_weight,
+        num_tokens,
+        hidden_size,
+        rms_norm_eps
+    );
+
+    ModelConfig config = make_test_config();
+    Qwen3Model model(config);
+
+    WeightMap weights = make_test_weights(
+        embed_weight,
+        input_ln_weight,
+        post_attn_ln_weight,
+        q_weight,
+        k_weight,
+        v_weight,
+        o_weight,
+        q_norm_weight,
+        k_norm_weight,
+        gate_weight,
+        up_weight,
+        down_weight,
+        final_norm_weight,
+        device
+    );
+
+    model.load_weights(weights);
+
+    if (!weights.empty()) {
+        throw std::runtime_error("Qwen3Model did not consume all weights");
+    }
+
+    if (!model.initialized()) {
+        throw std::runtime_error("Qwen3Model should be initialized");
+    }
+
+    Tensor input_ids = make_int_tensor(
+        {num_tokens},
+        input_ids_cpu,
+        device
+    );
+
+    Tensor position_ids = make_int_tensor(
+        {num_tokens},
+        position_ids_cpu,
+        device
+    );
+
+    Tensor hidden_states(
+        {num_tokens, hidden_size},
+        DType::FP32,
+        device
+    );
+
+    hidden_states.zero_();
+
+    ForwardContext context;
+    context.position_ids = &position_ids;
+    context.seq_len = num_tokens;
+    context.past_len = 0;
+    context.use_cache = false;
+
+    model.forward(input_ids, context, hidden_states);
+
+    std::vector<float> output_cpu(expected.size(), 0.0f);
+    hidden_states.copy_to_cpu(
+        output_cpu.data(),
+        output_cpu.size() * sizeof(float)
+    );
+
+    for (size_t i = 0; i < expected.size(); ++i) {
+        check_close(output_cpu[i], expected[i]);
+    }
+
+    std::cout << "[test_qwen3_model_" << device_name << "] passed\n";
+}
+
+void test_qwen3_model_null_position_ids() {
+    std::cout << "[test_qwen3_model_null_position_ids] start\n";
+
+    ModelConfig config = make_test_config();
+    Qwen3Model model(config);
+
+    std::vector<float> embed_weight(5 * 3, 0.1f);
+    std::vector<float> input_ln_weight(3, 1.0f);
+    std::vector<float> post_attn_ln_weight(3, 1.0f);
+    std::vector<float> q_weight(4 * 3, 0.1f);
+    std::vector<float> k_weight(2 * 3, 0.1f);
+    std::vector<float> v_weight(2 * 3, 0.1f);
+    std::vector<float> o_weight(3 * 4, 0.1f);
+    std::vector<float> q_norm_weight(2, 1.0f);
+    std::vector<float> k_norm_weight(2, 1.0f);
+    std::vector<float> gate_weight(4 * 3, 0.1f);
+    std::vector<float> up_weight(4 * 3, 0.1f);
+    std::vector<float> down_weight(3 * 4, 0.1f);
+    std::vector<float> final_norm_weight(3, 1.0f);
+
+    WeightMap weights = make_test_weights(
+        embed_weight,
+        input_ln_weight,
+        post_attn_ln_weight,
+        q_weight,
+        k_weight,
+        v_weight,
+        o_weight,
+        q_norm_weight,
+        k_norm_weight,
+        gate_weight,
+        up_weight,
+        down_weight,
+        final_norm_weight,
+        Device::CPU
+    );
+
+    model.load_weights(weights);
+
+    std::vector<int32_t> input_ids_cpu = {
+        0,
+    };
+
+    Tensor input_ids = make_int_tensor(
+        {1},
+        input_ids_cpu,
+        Device::CPU
+    );
+
+    Tensor hidden_states({1, 3}, DType::FP32, Device::CPU);
+
+    ForwardContext context;
+    context.position_ids = nullptr;
+    context.seq_len = 1;
+    context.past_len = 0;
+    context.use_cache = false;
+
+    bool caught = false;
+
+    try {
+        model.forward(input_ids, context, hidden_states);
+    } catch (const std::runtime_error&) {
+        caught = true;
+    }
+
+    if (!caught) {
+        throw std::runtime_error("Expected Qwen3Model null position_ids error");
+    }
+
+    std::cout << "[test_qwen3_model_null_position_ids] passed\n";
+}
+
+void test_qwen3_model_output_shape_mismatch() {
+    std::cout << "[test_qwen3_model_output_shape_mismatch] start\n";
+
+    ModelConfig config = make_test_config();
+    Qwen3Model model(config);
+
+    std::vector<float> embed_weight(5 * 3, 0.1f);
+    std::vector<float> input_ln_weight(3, 1.0f);
+    std::vector<float> post_attn_ln_weight(3, 1.0f);
+    std::vector<float> q_weight(4 * 3, 0.1f);
+    std::vector<float> k_weight(2 * 3, 0.1f);
+    std::vector<float> v_weight(2 * 3, 0.1f);
+    std::vector<float> o_weight(3 * 4, 0.1f);
+    std::vector<float> q_norm_weight(2, 1.0f);
+    std::vector<float> k_norm_weight(2, 1.0f);
+    std::vector<float> gate_weight(4 * 3, 0.1f);
+    std::vector<float> up_weight(4 * 3, 0.1f);
+    std::vector<float> down_weight(3 * 4, 0.1f);
+    std::vector<float> final_norm_weight(3, 1.0f);
+
+    WeightMap weights = make_test_weights(
+        embed_weight,
+        input_ln_weight,
+        post_attn_ln_weight,
+        q_weight,
+        k_weight,
+        v_weight,
+        o_weight,
+        q_norm_weight,
+        k_norm_weight,
+        gate_weight,
+        up_weight,
+        down_weight,
+        final_norm_weight,
+        Device::CPU
+    );
+
+    model.load_weights(weights);
+
+    std::vector<int32_t> input_ids_cpu = {
+        0,
+    };
+
+    std::vector<int32_t> position_ids_cpu = {
+        0,
+    };
+
+    Tensor input_ids = make_int_tensor(
+        {1},
+        input_ids_cpu,
+        Device::CPU
+    );
+
+    Tensor position_ids = make_int_tensor(
+        {1},
+        position_ids_cpu,
+        Device::CPU
+    );
+
+    Tensor bad_hidden_states({1, 2}, DType::FP32, Device::CPU);
+
+    ForwardContext context;
+    context.position_ids = &position_ids;
+    context.seq_len = 1;
+    context.past_len = 0;
+    context.use_cache = false;
+
+    bool caught = false;
+
+    try {
+        model.forward(input_ids, context, bad_hidden_states);
+    } catch (const std::runtime_error&) {
+        caught = true;
+    }
+
+    if (!caught) {
+        throw std::runtime_error("Expected Qwen3Model output shape mismatch error");
+    }
+
+    std::cout << "[test_qwen3_model_output_shape_mismatch] passed\n";
+}
+
+}  // namespace
+
+int main() {
+    try {
+        run_qwen3_model_test(Device::CPU);
+        run_qwen3_model_test(Device::CUDA);
+
+        test_qwen3_model_null_position_ids();
+        test_qwen3_model_output_shape_mismatch();
+    } catch (const std::exception& e) {
+        std::cerr << "[test_qwen3_model] failed: " << e.what() << "\n";
+        return 1;
+    }
+
+    std::cout << "[test_qwen3_model] all passed\n";
+    return 0;
+}
