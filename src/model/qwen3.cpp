@@ -1,4 +1,5 @@
 #include "model/qwen3.hpp"
+#include "ops/silu_and_mul.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -96,15 +97,51 @@ void Qwen3MLP::load_weights(WeightMap& weights, const std::string& prefix) {
     }
 }
 
-void Qwen3MLP::forward(const Tensor& hidden_states, Tensor& output) const {
+void Qwen3MLP::forward(const Tensor& input, Tensor& output) const {
     if (!initialized()) {
-        throw std::runtime_error("Qwen3MLP::forward called before weights are initialized");
+        throw std::runtime_error("Qwen3MLP is not initialized");
     }
 
-    (void)hidden_states;
-    (void)output;
+    if (input.dtype() != DType::FP32) {
+        throw std::runtime_error("Qwen3MLP input must be FP32");
+    }
 
-    throw std::runtime_error("Qwen3MLP::forward not implemented yet");
+    if (output.dtype() != DType::FP32) {
+        throw std::runtime_error("Qwen3MLP output must be FP32");
+    }
+
+    if (input.shape().size() != 2) {
+        throw std::runtime_error("Qwen3MLP input must be 2D: [num_tokens, hidden_size]");
+    }
+
+    if (output.shape().size() != 2) {
+        throw std::runtime_error("Qwen3MLP output must be 2D: [num_tokens, hidden_size]");
+    }
+
+    const int64_t num_tokens = input.shape()[0];
+
+    if (input.shape()[1] != hidden_size_) {
+        throw std::runtime_error("Qwen3MLP input hidden_size mismatch");
+    }
+
+    if (output.shape()[0] != num_tokens || output.shape()[1] != hidden_size_) {
+        throw std::runtime_error("Qwen3MLP output shape mismatch");
+    }
+
+    if (input.device() != output.device()) {
+        throw std::runtime_error("Qwen3MLP input and output must be on same device");
+    }
+
+    Tensor gate({num_tokens, intermediate_size_}, DType::FP32, input.device());
+    Tensor up({num_tokens, intermediate_size_}, DType::FP32, input.device());
+    Tensor act({num_tokens, intermediate_size_}, DType::FP32, input.device());
+
+    gate_proj_.forward(input, gate);
+    up_proj_.forward(input, up);
+
+    silu_and_mul(gate, up, act);
+
+    down_proj_.forward(act, output);
 }
 
 Qwen3Attention::Qwen3Attention(const ModelConfig& config)
