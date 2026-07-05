@@ -142,3 +142,8 @@ add_test(NAME test_silu_and_mul COMMAND test_silu_and_mul)
 add_executable(test_qwen3_mlp tests/test_qwen3_mlp.cpp)
 target_link_libraries(test_qwen3_mlp PRIVATE litellm_engine_core)
 add_test(NAME test_qwen3_mlp COMMAND test_qwen3_mlp)
+
+
+add_executable(test_rotary tests/test_rotary.cpp)
+target_link_libraries(test_rotary PRIVATE litellm_engine_core)
+add_test(NAME test_rotary COMMAND test_rotary)

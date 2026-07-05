@@ -24,7 +24,7 @@ public:
     }
 
     bool initialized() const override {
-        return head_dim_ > 0;
+        return head_dim_ > 0 && rope_theta_ > 0.0f;
     }
 
     void apply(
