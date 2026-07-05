@@ -36,10 +36,18 @@ void check_qwen3_config(const ModelConfig& config) {
         throw std::runtime_error("Qwen3 config head_dim must be positive");
     }
 
-    if (config.hidden_size != config.num_attention_heads * config.head_dim) {
-        throw std::runtime_error(
-            "Qwen3 config hidden_size must equal num_attention_heads * head_dim"
-        );
+    int64_t q_proj_out = static_cast<int64_t>(config.num_attention_heads) *
+                     static_cast<int64_t>(config.head_dim);
+
+    int64_t kv_proj_out = static_cast<int64_t>(config.num_key_value_heads) *
+                        static_cast<int64_t>(config.head_dim);
+
+    if (q_proj_out <= 0) {
+        throw std::runtime_error("Qwen3 config q_proj_out must be positive");
+    }
+
+    if (kv_proj_out <= 0) {
+        throw std::runtime_error("Qwen3 config kv_proj_out must be positive");
     }
 
     if (config.num_attention_heads % config.num_key_value_heads != 0) {
@@ -104,6 +112,8 @@ Qwen3Attention::Qwen3Attention(const ModelConfig& config)
       k_proj_(),
       v_proj_(),
       o_proj_(),
+      q_norm_(config.rms_norm_eps),
+      k_norm_(config.rms_norm_eps),
       rotary_(config.head_dim, config.rope_theta),
       hidden_size_(config.hidden_size),
       num_attention_heads_(config.num_attention_heads),
@@ -116,9 +126,6 @@ Qwen3Attention::Qwen3Attention(const ModelConfig& config)
         throw std::runtime_error("Qwen3Attention got invalid config");
     }
 
-    if (hidden_size_ != num_attention_heads_ * head_dim_) {
-        throw std::runtime_error("Qwen3Attention hidden_size mismatch");
-    }
 
     if (num_attention_heads_ % num_key_value_heads_ != 0) {
         throw std::runtime_error("Qwen3Attention invalid kv head config");
@@ -130,6 +137,9 @@ void Qwen3Attention::load_weights(WeightMap& weights, const std::string& prefix)
     k_proj_.load_weight(weights.take(prefix + ".k_proj.weight"));
     v_proj_.load_weight(weights.take(prefix + ".v_proj.weight"));
     o_proj_.load_weight(weights.take(prefix + ".o_proj.weight"));
+
+    q_norm_.load_weight(weights.take(prefix + ".q_norm.weight"));
+    k_norm_.load_weight(weights.take(prefix + ".k_norm.weight"));
 
     int64_t q_out = num_attention_heads_ * head_dim_;
     int64_t kv_out = num_key_value_heads_ * head_dim_;
@@ -152,6 +162,14 @@ void Qwen3Attention::load_weights(WeightMap& weights, const std::string& prefix)
     if (o_proj_.in_features() != q_out ||
         o_proj_.out_features() != hidden_size_) {
         throw std::runtime_error("Qwen3Attention o_proj weight shape mismatch");
+    }
+
+    if (q_norm_.hidden_size() != head_dim_) {
+        throw std::runtime_error("Qwen3Attention q_norm weight shape mismatch");
+    }
+
+    if (k_norm_.hidden_size() != head_dim_) {
+        throw std::runtime_error("Qwen3Attention k_norm weight shape mismatch");
     }
 }
 
@@ -297,13 +315,17 @@ Qwen3ForCausalLM::Qwen3ForCausalLM(const ModelConfig& config)
 void Qwen3ForCausalLM::load_weights(WeightMap& weights) {
     model_.load_weights(weights);
 
-    if (config_.tie_word_embeddings) {
-        throw std::runtime_error("tie_word_embeddings=true is not supported yet");
+    if (weights.contains("lm_head.weight")) {
+        lm_head_.load_weight(
+            weights.take("lm_head.weight")
+        );
+    } else if (config_.tie_word_embeddings) {
+        throw std::runtime_error(
+            "tie_word_embeddings=true without lm_head.weight is not supported yet"
+        );
+    } else {
+        throw std::runtime_error("Weight not found: lm_head.weight");
     }
-
-    lm_head_.load_weight(
-        weights.take("lm_head.weight")
-    );
 
     if (lm_head_.in_features() != config_.hidden_size ||
         lm_head_.out_features() != config_.vocab_size) {

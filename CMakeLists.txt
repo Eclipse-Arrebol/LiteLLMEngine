@@ -99,3 +99,21 @@ target_link_libraries(test_weight_loading_skeleton PRIVATE
     litellm_engine_core
 )
 add_test(NAME test_weight_loading_skeleton COMMAND test_weight_loading_skeleton)
+
+
+add_executable(test_weight_loader
+    ${CMAKE_SOURCE_DIR}/tests/test_weight_loader.cpp
+)
+target_link_libraries(test_weight_loader PRIVATE
+    litellm_engine_core
+)
+add_test(NAME test_weight_loader COMMAND test_weight_loader)
+
+
+add_executable(test_real_qwen3_weight_loading
+    ${CMAKE_SOURCE_DIR}/tests/test_real_qwen3_weight_loading.cpp
+)
+target_link_libraries(test_real_qwen3_weight_loading PRIVATE
+    litellm_engine_core
+)
+add_test(NAME test_real_qwen3_weight_loading COMMAND test_real_qwen3_weight_loading)

@@ -77,9 +77,11 @@ public:
 
     bool initialized() const override {
         return q_proj_.initialized() &&
-               k_proj_.initialized() &&
-               v_proj_.initialized() &&
-               o_proj_.initialized();
+            k_proj_.initialized() &&
+            v_proj_.initialized() &&
+            o_proj_.initialized() &&
+            q_norm_.initialized() &&
+            k_norm_.initialized();
     }
 
     void forward(
@@ -111,6 +113,9 @@ private:
     Linear k_proj_;
     Linear v_proj_;
     Linear o_proj_;
+
+    RMSNorm q_norm_;
+    RMSNorm k_norm_;
 
     RotaryEmbedding rotary_;
 

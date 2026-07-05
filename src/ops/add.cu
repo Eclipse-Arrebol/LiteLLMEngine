@@ -60,8 +60,8 @@ void add_cuda(const Tensor& a, const Tensor& b, Tensor& out) {
     int64_t n = static_cast<int64_t>(a.numel());
 
     int threads = 256;
-    dim3 block = make_1d_block(threads);
-    dim3 grid = make_1d_grid(n, threads);
+    dim3 block = cuda_make_1d_block(threads);
+    dim3 grid = cuda_make_1d_grid(n, threads);
 
     add_fp32_kernel<<<grid, block>>>(
         a.ptr<const float>(),
@@ -75,7 +75,7 @@ void add_cuda(const Tensor& a, const Tensor& b, Tensor& out) {
 
 } // namespace
 
-void add(const Tensor& a, const Tensor& b, Tensor& out) {
+void tensor_add(const Tensor& a, const Tensor& b, Tensor& out) {
     check_add_args(a, b, out);
 
     if (a.numel() == 0) {

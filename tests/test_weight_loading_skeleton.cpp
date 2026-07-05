@@ -96,6 +96,16 @@ void add_layer_weights(
     );
 
     weights.add(
+        prefix + ".self_attn.q_norm.weight",
+        make_weight({config.head_dim})
+    );
+
+    weights.add(
+        prefix + ".self_attn.k_norm.weight",
+        make_weight({config.head_dim})
+    );
+
+    weights.add(
         prefix + ".post_attention_layernorm.weight",
         make_weight({hidden_size})
     );

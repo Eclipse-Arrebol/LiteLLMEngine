@@ -34,11 +34,11 @@ inline constexpr T cdiv(T a, T b) {
     return (a + b - 1) / b;
 }
 
-inline dim3 make_1d_grid(int64_t n, int threads = 256) {
-    return dim3(static_cast<unsigned int>(cdiv<int64_t>(n, threads)));
+inline dim3 cuda_make_1d_grid(int64_t n, int threads = 256) {
+    return dim3(static_cast<unsigned int>(cdiv<int>(n, threads)));
 }
 
-inline dim3 make_1d_block(int threads = 256) {
+inline dim3 cuda_make_1d_block(int threads = 256) {
     return dim3(static_cast<unsigned int>(threads));
 }
 

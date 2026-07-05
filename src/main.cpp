@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
         a.copy_from_cpu(host_a.data(), host_a.size() * sizeof(float));
         b.copy_from_cpu(host_b.data(), host_b.size() * sizeof(float));
 
-        lite_llm::add(a, b, out);
+        lite_llm::tensor_add(a, b, out);
 
         std::vector<float> host_out(host_a.size(), 0.0f);
         out.copy_to_cpu(host_out.data(), host_out.size() * sizeof(float));
