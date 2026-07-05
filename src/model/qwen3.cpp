@@ -696,14 +696,71 @@ void Qwen3ForCausalLM::forward(
     Tensor& logits
 ) const {
     if (!initialized()) {
-        throw std::runtime_error("Qwen3ForCausalLM::forward called before weights are initialized");
+        throw std::runtime_error(
+            "Qwen3ForCausalLM::forward called before weights are initialized"
+        );
     }
 
-    (void)input_ids;
-    (void)context;
-    (void)logits;
+    if (input_ids.dtype() != DType::INT32) {
+        throw std::runtime_error("Qwen3ForCausalLM input_ids must be INT32");
+    }
 
-    throw std::runtime_error("Qwen3ForCausalLM::forward not implemented yet");
+    if (logits.dtype() != DType::FP32) {
+        throw std::runtime_error("Qwen3ForCausalLM logits must be FP32");
+    }
+
+    if (input_ids.shape().size() != 1) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM input_ids must be 1D: [num_tokens]"
+        );
+    }
+
+    if (logits.shape().size() != 2) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM logits must be 2D: [num_tokens, vocab_size]"
+        );
+    }
+
+    const int64_t num_tokens = input_ids.shape()[0];
+
+    if (context.seq_len != 0 && context.seq_len != num_tokens) {
+        throw std::runtime_error("Qwen3ForCausalLM context.seq_len mismatch");
+    }
+
+    if (logits.shape()[0] != num_tokens ||
+        logits.shape()[1] != config_.vocab_size) {
+        throw std::runtime_error("Qwen3ForCausalLM logits shape mismatch");
+    }
+
+    if (input_ids.device() != logits.device()) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM input_ids and logits must be on same device"
+        );
+    }
+
+    if (context.position_ids == nullptr) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM ForwardContext.position_ids is null"
+        );
+    }
+
+    if (context.position_ids->device() != input_ids.device()) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM position_ids device mismatch"
+        );
+    }
+
+    const Device device = input_ids.device();
+
+    Tensor hidden_states(
+        {num_tokens, config_.hidden_size},
+        DType::FP32,
+        device
+    );
+
+    model_.forward(input_ids, context, hidden_states);
+
+    lm_head_.forward(hidden_states, logits);
 }
 
 } // namespace lite_llm
