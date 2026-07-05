@@ -1,5 +1,7 @@
 #include "model/qwen3.hpp"
 #include "ops/silu_and_mul.hpp"
+#include "ops/copy.hpp"
+#include "ops/attention.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -216,14 +218,176 @@ void Qwen3Attention::forward(
     Tensor& output
 ) const {
     if (!initialized()) {
-        throw std::runtime_error("Qwen3Attention::forward called before weights are initialized");
+        throw std::runtime_error(
+            "Qwen3Attention::forward called before weights are initialized"
+        );
     }
 
-    (void)hidden_states;
-    (void)context;
-    (void)output;
+    if (context.position_ids == nullptr) {
+        throw std::runtime_error("Qwen3Attention ForwardContext.position_ids is null");
+    }
 
-    throw std::runtime_error("Qwen3Attention::forward not implemented yet");
+    if (context.use_cache) {
+        throw std::runtime_error("Qwen3Attention KV cache is not supported yet");
+    }
+
+    if (context.past_len != 0) {
+        throw std::runtime_error("Qwen3Attention past_len is not supported yet");
+    }
+
+    const Tensor& position_ids = *context.position_ids;
+
+    if (hidden_states.dtype() != DType::FP32) {
+        throw std::runtime_error("Qwen3Attention hidden_states must be FP32");
+    }
+
+    if (position_ids.dtype() != DType::INT32) {
+        throw std::runtime_error("Qwen3Attention position_ids must be INT32");
+    }
+
+    if (output.dtype() != DType::FP32) {
+        throw std::runtime_error("Qwen3Attention output must be FP32");
+    }
+
+    if (hidden_states.shape().size() != 2) {
+        throw std::runtime_error(
+            "Qwen3Attention hidden_states must be 2D: [num_tokens, hidden_size]"
+        );
+    }
+
+    if (position_ids.shape().size() != 1) {
+        throw std::runtime_error(
+            "Qwen3Attention position_ids must be 1D: [num_tokens]"
+        );
+    }
+
+    if (output.shape().size() != 2) {
+        throw std::runtime_error(
+            "Qwen3Attention output must be 2D: [num_tokens, hidden_size]"
+        );
+    }
+
+    const int64_t num_tokens = hidden_states.shape()[0];
+
+    if (context.seq_len != 0 && context.seq_len != num_tokens) {
+        throw std::runtime_error("Qwen3Attention context.seq_len mismatch");
+    }
+
+    if (hidden_states.shape()[1] != hidden_size_) {
+        throw std::runtime_error("Qwen3Attention hidden_size mismatch");
+    }
+
+    if (position_ids.shape()[0] != num_tokens) {
+        throw std::runtime_error("Qwen3Attention position_ids shape mismatch");
+    }
+
+    if (output.shape()[0] != num_tokens || output.shape()[1] != hidden_size_) {
+        throw std::runtime_error("Qwen3Attention output shape mismatch");
+    }
+
+    if (hidden_states.device() != position_ids.device() ||
+        hidden_states.device() != output.device()) {
+        throw std::runtime_error(
+            "Qwen3Attention hidden_states, position_ids and output must be on same device"
+        );
+    }
+
+    const Device device = hidden_states.device();
+
+    const int64_t q_size = num_attention_heads_ * head_dim_;
+    const int64_t kv_size = num_key_value_heads_ * head_dim_;
+
+    Tensor q_flat({num_tokens, q_size}, DType::FP32, device);
+    Tensor k_flat({num_tokens, kv_size}, DType::FP32, device);
+    Tensor v_flat({num_tokens, kv_size}, DType::FP32, device);
+
+    q_proj_.forward(hidden_states, q_flat);
+    k_proj_.forward(hidden_states, k_flat);
+    v_proj_.forward(hidden_states, v_flat);
+
+    Tensor q_2d(
+        {num_tokens * num_attention_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    Tensor k_2d(
+        {num_tokens * num_key_value_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    tensor_copy(q_flat, q_2d);
+    tensor_copy(k_flat, k_2d);
+
+    Tensor q_normed_2d(
+        {num_tokens * num_attention_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    Tensor k_normed_2d(
+        {num_tokens * num_key_value_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    q_norm_.forward(q_2d, q_normed_2d);
+    k_norm_.forward(k_2d, k_normed_2d);
+
+    Tensor q_3d(
+        {num_tokens, num_attention_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    Tensor k_3d(
+        {num_tokens, num_key_value_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    Tensor v_3d(
+        {num_tokens, num_key_value_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    tensor_copy(q_normed_2d, q_3d);
+    tensor_copy(k_normed_2d, k_3d);
+    tensor_copy(v_flat, v_3d);
+
+    Tensor q_rot(
+        {num_tokens, num_attention_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    Tensor k_rot(
+        {num_tokens, num_key_value_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    rotary_.apply(q_3d, k_3d, position_ids, q_rot, k_rot);
+
+    Tensor attn_out_3d(
+        {num_tokens, num_attention_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    flash_attention(q_rot, k_rot, v_3d, attn_out_3d);
+
+    Tensor attn_out_flat(
+        {num_tokens, q_size},
+        DType::FP32,
+        device
+    );
+
+    tensor_copy(attn_out_3d, attn_out_flat);
+
+    o_proj_.forward(attn_out_flat, output);
 }
 
 Qwen3DecoderLayer::Qwen3DecoderLayer(const ModelConfig& config)

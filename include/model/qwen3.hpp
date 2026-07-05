@@ -76,12 +76,17 @@ public:
     }
 
     bool initialized() const override {
-        return q_proj_.initialized() &&
-            k_proj_.initialized() &&
-            v_proj_.initialized() &&
-            o_proj_.initialized() &&
-            q_norm_.initialized() &&
-            k_norm_.initialized();
+        return hidden_size_ > 0 &&
+           num_attention_heads_ > 0 &&
+           num_key_value_heads_ > 0 &&
+           head_dim_ > 0 &&
+           q_proj_.initialized() &&
+           q_norm_.initialized() &&
+           k_proj_.initialized() &&
+           k_norm_.initialized() &&
+           v_proj_.initialized() &&
+           o_proj_.initialized() &&
+           rotary_.initialized();
     }
 
     void forward(
