@@ -147,3 +147,8 @@ add_test(NAME test_qwen3_mlp COMMAND test_qwen3_mlp)
 add_executable(test_rotary tests/test_rotary.cpp)
 target_link_libraries(test_rotary PRIVATE litellm_engine_core)
 add_test(NAME test_rotary COMMAND test_rotary)
+
+
+add_executable(test_attention tests/test_attention.cpp)
+target_link_libraries(test_attention PRIVATE litellm_engine_core)
+add_test(NAME test_attention COMMAND test_attention)
