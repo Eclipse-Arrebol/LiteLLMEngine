@@ -2,6 +2,7 @@
 #include "ops/silu_and_mul.hpp"
 #include "ops/copy.hpp"
 #include "ops/attention.hpp"
+#include "ops/add.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -391,10 +392,14 @@ void Qwen3Attention::forward(
 }
 
 Qwen3DecoderLayer::Qwen3DecoderLayer(const ModelConfig& config)
-    : self_attn_(config),
+    : hidden_size_(config.hidden_size),
+      self_attn_(config),
       mlp_(config),
       input_layernorm_(config.rms_norm_eps),
       post_attention_layernorm_(config.rms_norm_eps) {
+    if (hidden_size_ <= 0) {
+        throw std::runtime_error("Qwen3DecoderLayer hidden_size must be positive");
+    }
 }
 
 void Qwen3DecoderLayer::load_weights(WeightMap& weights, const std::string& prefix) {
@@ -423,14 +428,81 @@ void Qwen3DecoderLayer::forward(
     Tensor& output
 ) const {
     if (!initialized()) {
-        throw std::runtime_error("Qwen3DecoderLayer::forward called before weights are initialized");
+        throw std::runtime_error(
+            "Qwen3DecoderLayer::forward called before weights are initialized"
+        );
     }
 
-    (void)hidden_states;
-    (void)context;
-    (void)output;
+    if (hidden_states.dtype() != DType::FP32) {
+        throw std::runtime_error("Qwen3DecoderLayer hidden_states must be FP32");
+    }
 
-    throw std::runtime_error("Qwen3DecoderLayer::forward not implemented yet");
+    if (output.dtype() != DType::FP32) {
+        throw std::runtime_error("Qwen3DecoderLayer output must be FP32");
+    }
+
+    if (hidden_states.shape().size() != 2) {
+        throw std::runtime_error(
+            "Qwen3DecoderLayer hidden_states must be 2D: [num_tokens, hidden_size]"
+        );
+    }
+
+    if (output.shape() != hidden_states.shape()) {
+        throw std::runtime_error("Qwen3DecoderLayer output shape mismatch");
+    }
+
+    if (hidden_states.shape()[1] != hidden_size_) {
+        throw std::runtime_error("Qwen3DecoderLayer hidden_size mismatch");
+    }
+
+    if (hidden_states.device() != output.device()) {
+        throw std::runtime_error(
+            "Qwen3DecoderLayer hidden_states and output must be on same device"
+        );
+    }
+
+    const int64_t num_tokens = hidden_states.shape()[0];
+    const Device device = hidden_states.device();
+
+    Tensor normed_1(
+        {num_tokens, hidden_size_},
+        DType::FP32,
+        device
+    );
+
+    Tensor attn_out(
+        {num_tokens, hidden_size_},
+        DType::FP32,
+        device
+    );
+
+    Tensor residual_after_attn(
+        {num_tokens, hidden_size_},
+        DType::FP32,
+        device
+    );
+
+    input_layernorm_.forward(hidden_states, normed_1);
+    self_attn_.forward(normed_1, context, attn_out);
+
+    tensor_add(hidden_states, attn_out, residual_after_attn);
+
+    Tensor normed_2(
+        {num_tokens, hidden_size_},
+        DType::FP32,
+        device
+    );
+
+    Tensor mlp_out(
+        {num_tokens, hidden_size_},
+        DType::FP32,
+        device
+    );
+
+    post_attention_layernorm_.forward(residual_after_attn, normed_2);
+    mlp_.forward(normed_2, mlp_out);
+
+    tensor_add(residual_after_attn, mlp_out, output);
 }
 
 Qwen3Model::Qwen3Model(const ModelConfig& config)

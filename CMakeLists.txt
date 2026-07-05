@@ -162,3 +162,8 @@ add_test(NAME test_copy COMMAND test_copy)
 add_executable(test_qwen3_attention tests/test_qwen3_attention.cpp)
 target_link_libraries(test_qwen3_attention PRIVATE litellm_engine_core)
 add_test(NAME test_qwen3_attention COMMAND test_qwen3_attention)
+
+
+add_executable(test_qwen3_decoder_layer tests/test_qwen3_decoder_layer.cpp)
+target_link_libraries(test_qwen3_decoder_layer PRIVATE litellm_engine_core)
+add_test(NAME test_qwen3_decoder_layer COMMAND test_qwen3_decoder_layer)

@@ -147,10 +147,11 @@ public:
     }
 
     bool initialized() const override {
-        return self_attn_.initialized() &&
-               mlp_.initialized() &&
-               input_layernorm_.initialized() &&
-               post_attention_layernorm_.initialized();
+        return hidden_size_ > 0 &&
+           self_attn_.initialized() &&
+           mlp_.initialized() &&
+           input_layernorm_.initialized() &&
+           post_attention_layernorm_.initialized();
     }
 
     void forward(
@@ -162,6 +163,7 @@ public:
     void load_weights(WeightMap& weights, const std::string& prefix);
 
 private:
+    int64_t hidden_size_ = 0;
     Qwen3Attention self_attn_;
     Qwen3MLP mlp_;
 
