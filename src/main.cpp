@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
         std::cout << "  Temperature: " << args.temperature << "\n";
         std::cout << "  Top-k:       " << args.top_k << "\n";
         std::cout << "  Top-p:       " << args.top_p << "\n";
+        std::cout << "  verbose:       " << args.verbose << "\n";
         std::cout << "  Device arg:  " << device_arg << "\n";
 
         std::cout << "\nLoading model metadata...\n";
@@ -127,6 +128,7 @@ int main(int argc, char** argv) {
         gen_options.max_new_tokens = args.max_tokens;
         gen_options.eos_token_id = -1;
         gen_options.device = device;
+        gen_options.verbose = args.verbose;
 
         std::cout << "\nGenerating...\n";
 

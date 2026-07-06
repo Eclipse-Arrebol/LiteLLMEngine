@@ -14,6 +14,8 @@ struct GreedyGenerateOptions {
     // 小于 0 表示不检查 eos
     int32_t eos_token_id = -1;
 
+    bool verbose = false;
+
     Device device = Device::CUDA;
 };
 

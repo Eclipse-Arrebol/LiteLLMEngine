@@ -104,6 +104,8 @@ Args parse_args(int argc, char** argv) {
             args.top_p = std::stof(get_arg_value(i, argc, argv, arg));
         } else if (arg == "--device" || starts_with(arg, "--device=")) {
             args.device = get_arg_value(i, argc, argv, arg);
+        } else if (arg == "--verbose") {
+            args.verbose = true;
         } else {
             throw std::runtime_error("Unknown argument: " + arg);
         }

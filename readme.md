@@ -308,3 +308,16 @@ private:
 ```
 sudo apt install -y nlohmann-json3-dev
 ```
+
+
+## 运行命令
+```
+./build/LiteLLMEngine \
+  --model /root/rivermind-data/Qwen_Qwen3-0.6B \
+  --prompt "Introduce CUDA briefly." \
+  --max-tokens 64 \
+  --device cuda \
+  --temperature 0 \
+  --eos-token-id 151645 \
+  --verbose
+```

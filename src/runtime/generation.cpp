@@ -5,6 +5,7 @@
 
 #include <stdexcept>
 #include <vector>
+#include <iostream>
 
 namespace lite_llm {
 
@@ -100,14 +101,32 @@ std::vector<int32_t> generate_greedy(
 
         model.forward(input_ids_tensor, context, logits);
 
+
         const int32_t next_token_id = argmax_last_token(logits);
 
-        generated.push_back(next_token_id);
+        if (options.verbose) {
+            std::cerr << "[generate] step "
+                    << (step + 1)
+                    << "/"
+                    << options.max_new_tokens
+                    << ", seq_len="
+                    << seq_len
+                    << ", next_token_id="
+                    << next_token_id
+                    << std::endl;
+        }
 
         if (options.eos_token_id >= 0 &&
             next_token_id == options.eos_token_id) {
+            if (options.verbose) {
+                std::cerr << "[generate] hit eos_token_id="
+                        << next_token_id
+                        << std::endl;
+            }
             break;
         }
+
+        generated.push_back(next_token_id);
     }
 
     return generated;

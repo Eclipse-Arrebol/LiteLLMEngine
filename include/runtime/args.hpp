@@ -18,6 +18,7 @@ struct Args {
     float temperature = 0.7f;
     int top_k = 50;
     float top_p = 0.9f;
+    bool verbose = false;
     std::optional<std::string> device = std::nullopt;
 };
 
