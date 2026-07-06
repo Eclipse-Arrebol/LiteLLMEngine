@@ -187,3 +187,8 @@ add_test(NAME test_argmax COMMAND test_argmax)
 add_executable(test_generation tests/test_generation.cpp)
 target_link_libraries(test_generation PRIVATE litellm_engine_core)
 add_test(NAME test_generation COMMAND test_generation)
+
+
+add_executable(test_token_ids tests/test_token_ids.cpp)
+target_link_libraries(test_token_ids PRIVATE litellm_engine_core)
+add_test(NAME test_token_ids COMMAND test_token_ids)
