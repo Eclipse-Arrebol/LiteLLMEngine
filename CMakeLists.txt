@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.18)
 
 project(LiteLLMEngine LANGUAGES CXX CUDA)
 
+add_subdirectory(3rdparty/tokenizers-cpp)
+
 set(CMAKE_CUDA_ARCHITECTURES 89)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -34,6 +36,7 @@ target_include_directories(litellm_engine_core PUBLIC
 target_link_libraries(litellm_engine_core PUBLIC
     CUDA::cudart
     CUDA::cublas
+    tokenizers_cpp
 )
 
 set_target_properties(litellm_engine_core PROPERTIES

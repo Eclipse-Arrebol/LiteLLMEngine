@@ -10,8 +10,12 @@
 
 #include "core/device.hpp"
 
+#include "tokenizer/hf_tokenizer.hpp"
+#include "tokenizer/qwen3_chat_template.hpp"
+
 #include <exception>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -34,30 +38,6 @@ int main(int argc, char** argv) {
         std::cout << "  Top-k:       " << args.top_k << "\n";
         std::cout << "  Top-p:       " << args.top_p << "\n";
         std::cout << "  Device arg:  " << device_arg << "\n";
-        std::cout << "  EOS token:   "
-          << (args.eos_token_id.has_value()
-              ? std::to_string(args.eos_token_id.value())
-              : "<none>")
-          << "\n";
-
-        if (!args.input_ids.has_value()) {
-            std::cout << "\nNo --input-ids provided.\n";
-            std::cout << "Tokenizer is not implemented yet, so prompt text cannot be encoded directly.\n";
-            std::cout << "Please pass comma-separated token ids for now.\n";
-            std::cout << "\nExample:\n";
-            std::cout << "  ./build/LiteLLMEngine \\\n";
-            std::cout << "    --model /root/rivermind-data/Qwen_Qwen3-0.6B \\\n";
-            std::cout << "    --input-ids \"151646\" \\\n";
-            std::cout << "    --max-tokens 1 \\\n";
-            std::cout << "    --device cuda\n";
-            return 0;
-        }
-
-        const std::vector<int32_t> input_ids =
-            lite_llm::parse_token_ids(args.input_ids.value());
-
-        std::cout << "\nInput token ids:\n";
-        std::cout << "  " << lite_llm::format_token_ids(input_ids) << "\n";
 
         std::cout << "\nLoading model metadata...\n";
 
@@ -65,6 +45,42 @@ int main(int argc, char** argv) {
         auto model_config = lite_llm::load_model_config(model_files.config_path);
 
         lite_llm::print_model_config(model_config);
+
+        std::vector<int32_t> input_ids;
+        std::unique_ptr<lite_llm::HFTokenizer> tokenizer;
+
+        if (args.input_ids.has_value()) {
+            input_ids = lite_llm::parse_token_ids(args.input_ids.value());
+
+            std::cout << "\nInput token ids:\n";
+            std::cout << "  " << lite_llm::format_token_ids(input_ids) << "\n";
+            std::cout << "Input length: " << input_ids.size() << "\n";
+        } else {
+            const std::string tokenizer_path =
+                model_files.model_dir + "/tokenizer.json";
+
+            std::cout << "\nLoading tokenizer from:\n";
+            std::cout << "  " << tokenizer_path << "\n";
+
+            tokenizer = std::make_unique<lite_llm::HFTokenizer>(
+                tokenizer_path
+            );
+
+            const std::string prompt_text =
+                lite_llm::apply_qwen3_chat_template(
+                    args.prompt,
+                    false
+                );
+
+            input_ids = tokenizer->encode(prompt_text);
+
+            std::cout << "\nInput prompt:\n";
+            std::cout << args.prompt << "\n";
+
+            std::cout << "\nEncoded input token ids:\n";
+            std::cout << "  " << lite_llm::format_token_ids(input_ids) << "\n";
+            std::cout << "Input length: " << input_ids.size() << "\n";
+        }
 
         const std::string weight_dir =
             model_files.model_dir + "/converted_weights";
@@ -109,7 +125,7 @@ int main(int argc, char** argv) {
 
         lite_llm::GreedyGenerateOptions gen_options;
         gen_options.max_new_tokens = args.max_tokens;
-        gen_options.eos_token_id = args.eos_token_id.value_or(-1);
+        gen_options.eos_token_id = -1;
         gen_options.device = device;
 
         std::cout << "\nGenerating...\n";
@@ -121,20 +137,29 @@ int main(int argc, char** argv) {
                 gen_options
             );
 
+        std::vector<int32_t> new_ids;
+
+        if (generated_ids.size() > input_ids.size()) {
+            new_ids.assign(
+                generated_ids.begin() + static_cast<long>(input_ids.size()),
+                generated_ids.end()
+            );
+        }
+
         std::cout << "\nGenerated token ids:\n";
         std::cout << "  " << lite_llm::format_token_ids(generated_ids) << "\n";
 
         std::cout << "\nNew token ids:\n";
 
-        if (generated_ids.size() <= input_ids.size()) {
+        if (new_ids.empty()) {
             std::cout << "  <none>\n";
         } else {
-            std::vector<int32_t> new_ids(
-                generated_ids.begin() + static_cast<long>(input_ids.size()),
-                generated_ids.end()
-            );
-
             std::cout << "  " << lite_llm::format_token_ids(new_ids) << "\n";
+        }
+
+        if (tokenizer) {
+            std::cout << "\nDecoded new text:\n";
+            std::cout << tokenizer->decode(new_ids) << "\n";
         }
 
         return 0;
