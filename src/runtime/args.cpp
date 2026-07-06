@@ -60,12 +60,14 @@ void print_usage(const char* program) {
         << "Options:\n"
         << "  --model <str>          HuggingFace model name or local path\n"
         << "  --prompt <str>         Input prompt\n"
+        << "  --input-ids <str>      Comma-separated token ids, e.g. \"1,2,3\"\n"
         << "  --max-tokens <int>     Maximum generated tokens, default: 128\n"
         << "  --temperature <float>  Sampling temperature, default: 0.7\n"
         << "  --top-k <int>          Top-k sampling, default: 50\n"
         << "  --top-p <float>        Top-p sampling, default: 0.9\n"
         << "  --device <str>         Device, e.g. cpu, cuda, cuda:0\n"
-        << "  -h, --help             Show this help message\n";
+        << "  -h, --help             Show this help message\n"
+        << "  --eos-token-id <int>  Stop generation when this token id is generated\n";
 }
 
 /**
@@ -88,9 +90,13 @@ Args parse_args(int argc, char** argv) {
             args.model = get_arg_value(i, argc, argv, arg);
         } else if (arg == "--prompt" || starts_with(arg, "--prompt=")) {
             args.prompt = get_arg_value(i, argc, argv, arg);
+        } else if(arg == "--input-ids" || starts_with(arg, "--input-ids=")){
+            args.input_ids = get_arg_value(i, argc, argv, arg);
         } else if (arg == "--max-tokens" || starts_with(arg, "--max-tokens=")) {
             args.max_tokens = std::stoi(get_arg_value(i, argc, argv, arg));
-        } else if (arg == "--temperature" || starts_with(arg, "--temperature=")) {
+        } else if (arg == "--eos-token-id" || starts_with(arg, "--eos-token-id=")) {
+            args.eos_token_id = std::stoi(get_arg_value(i, argc, argv, arg));
+        }else if (arg == "--temperature" || starts_with(arg, "--temperature=")) {
             args.temperature = std::stof(get_arg_value(i, argc, argv, arg));
         } else if (arg == "--top-k" || starts_with(arg, "--top-k=")) {
             args.top_k = std::stoi(get_arg_value(i, argc, argv, arg));
@@ -121,6 +127,10 @@ Args parse_args(int argc, char** argv) {
 
     if (args.top_p <= 0.0f || args.top_p > 1.0f) {
         throw std::runtime_error("--top-p must be in range (0, 1]");
+    }
+
+    if (args.eos_token_id.has_value() && args.eos_token_id.value() < 0) {
+        throw std::runtime_error("--eos-token-id must be >= 0");
     }
 
     return args;

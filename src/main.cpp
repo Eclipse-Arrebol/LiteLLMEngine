@@ -1,96 +1,141 @@
 #include "runtime/args.hpp"
 #include "runtime/model_downloader.hpp"
+#include "runtime/token_ids.hpp"
+#include "runtime/generation.hpp"
+
 #include "model/model_config.hpp"
+#include "model/qwen3.hpp"
+
+#include "weights/weight_loader.hpp"
+
 #include "core/device.hpp"
-#include "core/tensor.hpp"
-#include "core/dtype.hpp"
-#include "ops/add.hpp"
 
 #include <exception>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 int main(int argc, char** argv) {
     try {
         lite_llm::Args args = lite_llm::parse_args(argc, argv);
-        
-        std::string device_arg = args.device.value_or("auto");
-        lite_llm::Device device = lite_llm::resolve_device(device_arg);
-        std::cout << "Device: " << lite_llm::device_to_string(device) << std::endl;
 
-        std::vector<float> host_input = {
-            1.0f, 2.0f, 3.0f,
-            4.0f, 5.0f, 6.0f
-        };
+        const std::string device_arg = args.device.value_or("auto");
+        const lite_llm::Device device = lite_llm::resolve_device(device_arg);
 
-        lite_llm::Tensor tensor({2, 3}, lite_llm::DType::FP32, device);
+        std::cout << "LiteLLMEngine\n";
+        std::cout << "Device: " << lite_llm::device_to_string(device) << "\n";
 
-        tensor.copy_from_cpu(
-            host_input.data(),
-            host_input.size() * sizeof(float)
-        );
-
-        std::vector<float> host_output(host_input.size(), 0.0f);
-
-        tensor.copy_to_cpu(
-            host_output.data(),
-            host_output.size() * sizeof(float)
-        );
-
-        std::cout << "Tensor copy test:" << std::endl;
-
-        for (float value : host_output) {
-            std::cout << value << " ";
-        }
-
-        std::cout << std::endl;
-
-        std::vector<float> host_a = {
-            1.0f, 2.0f, 3.0f,
-            4.0f, 5.0f, 6.0f
-        };
-
-        std::vector<float> host_b = {
-            10.0f, 20.0f, 30.0f,
-            40.0f, 50.0f, 60.0f
-        };
-
-        lite_llm::Tensor a({2, 3}, lite_llm::DType::FP32, device);
-        lite_llm::Tensor b({2, 3}, lite_llm::DType::FP32, device);
-        lite_llm::Tensor out({2, 3}, lite_llm::DType::FP32, device);
-
-        a.copy_from_cpu(host_a.data(), host_a.size() * sizeof(float));
-        b.copy_from_cpu(host_b.data(), host_b.size() * sizeof(float));
-
-        lite_llm::tensor_add(a, b, out);
-
-        std::vector<float> host_out(host_a.size(), 0.0f);
-        out.copy_to_cpu(host_out.data(), host_out.size() * sizeof(float));
-
-        std::cout << "Add test:" << std::endl;
-
-        for (float value : host_out) {
-            std::cout << value << " ";
-        }
-
-        std::cout << std::endl;
-
-        std::cout << "lite_llm config:\n";
+        std::cout << "Config:\n";
         std::cout << "  Model:       " << args.model << "\n";
         std::cout << "  Prompt:      " << args.prompt << "\n";
         std::cout << "  Max tokens:  " << args.max_tokens << "\n";
         std::cout << "  Temperature: " << args.temperature << "\n";
         std::cout << "  Top-k:       " << args.top_k << "\n";
         std::cout << "  Top-p:       " << args.top_p << "\n";
-        std::cout << "  Device:      " << device_arg << "\n";
+        std::cout << "  Device arg:  " << device_arg << "\n";
+        std::cout << "  EOS token:   "
+          << (args.eos_token_id.has_value()
+              ? std::to_string(args.eos_token_id.value())
+              : "<none>")
+          << "\n";
+
+        if (!args.input_ids.has_value()) {
+            std::cout << "\nNo --input-ids provided.\n";
+            std::cout << "Tokenizer is not implemented yet, so prompt text cannot be encoded directly.\n";
+            std::cout << "Please pass comma-separated token ids for now.\n";
+            std::cout << "\nExample:\n";
+            std::cout << "  ./build/LiteLLMEngine \\\n";
+            std::cout << "    --model /root/rivermind-data/Qwen_Qwen3-0.6B \\\n";
+            std::cout << "    --input-ids \"151646\" \\\n";
+            std::cout << "    --max-tokens 1 \\\n";
+            std::cout << "    --device cuda\n";
+            return 0;
+        }
+
+        const std::vector<int32_t> input_ids =
+            lite_llm::parse_token_ids(args.input_ids.value());
+
+        std::cout << "\nInput token ids:\n";
+        std::cout << "  " << lite_llm::format_token_ids(input_ids) << "\n";
+
+        std::cout << "\nLoading model metadata...\n";
 
         auto model_files = lite_llm::ensure_model_files(args.model);
         auto model_config = lite_llm::load_model_config(model_files.config_path);
+
         lite_llm::print_model_config(model_config);
-        // TODO:
-        // Engine engine(args);
-        // engine.generate();
+
+        const std::string weight_dir =
+            model_files.model_dir + "/converted_weights";
+
+        std::cout << "\nLoading converted weights from:\n";
+        std::cout << "  " << weight_dir << "\n";
+
+        lite_llm::WeightLoaderOptions weight_options;
+        weight_options.device = device;
+
+        lite_llm::WeightMap weights =
+            lite_llm::load_weight_map_from_directory(
+                weight_dir,
+                weight_options
+            );
+
+        std::cout << "Weights loaded: " << weights.size() << "\n";
+
+        std::cout << "\nBuilding Qwen3ForCausalLM...\n";
+
+        lite_llm::Qwen3ForCausalLM model(model_config);
+        model.load_weights(weights);
+
+        if (!weights.empty()) {
+            throw std::runtime_error(
+                "Some weights were not consumed by Qwen3ForCausalLM"
+            );
+        }
+
+        if (!model.initialized()) {
+            throw std::runtime_error(
+                "Qwen3ForCausalLM is not initialized after load_weights"
+            );
+        }
+
+        std::cout << "Model initialized.\n";
+
+        if (args.temperature != 0.0f) {
+            std::cout << "\nWarning: sampling is not implemented yet.\n";
+            std::cout << "Current generation uses greedy argmax only.\n";
+        }
+
+        lite_llm::GreedyGenerateOptions gen_options;
+        gen_options.max_new_tokens = args.max_tokens;
+        gen_options.eos_token_id = args.eos_token_id.value_or(-1);
+        gen_options.device = device;
+
+        std::cout << "\nGenerating...\n";
+
+        const std::vector<int32_t> generated_ids =
+            lite_llm::generate_greedy(
+                model,
+                input_ids,
+                gen_options
+            );
+
+        std::cout << "\nGenerated token ids:\n";
+        std::cout << "  " << lite_llm::format_token_ids(generated_ids) << "\n";
+
+        std::cout << "\nNew token ids:\n";
+
+        if (generated_ids.size() <= input_ids.size()) {
+            std::cout << "  <none>\n";
+        } else {
+            std::vector<int32_t> new_ids(
+                generated_ids.begin() + static_cast<long>(input_ids.size()),
+                generated_ids.end()
+            );
+
+            std::cout << "  " << lite_llm::format_token_ids(new_ids) << "\n";
+        }
 
         return 0;
     } catch (const std::exception& e) {
@@ -98,7 +143,4 @@ int main(int argc, char** argv) {
         lite_llm::print_usage(argv[0]);
         return 1;
     }
-
-
-
 }
