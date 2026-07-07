@@ -243,11 +243,7 @@ void Qwen3Attention::forward(
             }
         }
 
-    if (context.past_len != 0) {
-        throw std::runtime_error(
-            "Qwen3Attention past_len is not supported yet"
-        );
-    }
+    
 
     const Tensor& position_ids = *context.position_ids;
 
@@ -282,6 +278,20 @@ void Qwen3Attention::forward(
     }
 
     const int64_t num_tokens = hidden_states.shape()[0];
+
+    if (context.past_len != 0) {
+        if (!context.use_cache) {
+            throw std::runtime_error(
+                "Qwen3Attention past_len > 0 requires use_cache=true"
+            );
+        }
+
+        if (num_tokens != 1) {
+            throw std::runtime_error(
+                "Qwen3Attention decode with past_len > 0 only supports num_tokens=1"
+            );
+        }
+    }
 
     if (context.seq_len != 0 && context.seq_len != num_tokens) {
         throw std::runtime_error("Qwen3Attention context.seq_len mismatch");
@@ -399,7 +409,22 @@ void Qwen3Attention::forward(
         device
     );
 
-    flash_attention(q_rot, k_rot, v_3d, attn_out_3d);
+    if (context.use_cache && context.past_len > 0) {
+        const LayerKVCache& layer_cache =
+            context.kv_cache->layer(context.layer_idx);
+
+        const int64_t kv_seq_len = context.past_len + num_tokens;
+
+        flash_attention_kv_cache(
+            q_rot,
+            layer_cache.key,
+            layer_cache.value,
+            kv_seq_len,
+            attn_out_3d
+        );
+    } else {
+        flash_attention(q_rot, k_rot, v_3d, attn_out_3d);
+    }
 
     Tensor attn_out_flat(
         {num_tokens, q_size},
@@ -694,6 +719,15 @@ void Qwen3Model::forward(
             current = &hidden_a;
             next = &hidden_b;
         }
+    }
+    if (context.use_cache) {
+        if (context.kv_cache == nullptr) {
+            throw std::runtime_error(
+                "Qwen3Model use_cache=true but kv_cache is null"
+            );
+        }
+
+        context.kv_cache->advance(context.seq_len);
     }
 
     norm_.forward(*current, hidden_states);

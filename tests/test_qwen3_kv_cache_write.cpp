@@ -283,9 +283,9 @@ void run_qwen3_kv_cache_write_test(Device device) {
 
     // 如果你还没有在 Qwen3Model::forward 末尾调用 kv_cache.advance(seq_len)，
     // 那么 ModelKVCache 的全局 current_len 仍然应该是 0。
-    if (kv_cache.current_len() != 0) {
+    if (kv_cache.current_len() != seq_len) {
         throw std::runtime_error(
-            "kv_cache.current_len should remain 0 before advance is integrated"
+            "kv_cache.current_len should equal seq_len after model forward"
         );
     }
 
