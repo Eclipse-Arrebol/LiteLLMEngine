@@ -134,7 +134,8 @@ class Qwen3DecoderLayer : public Layer {
 public:
     Qwen3DecoderLayer() = default;
 
-    explicit Qwen3DecoderLayer(const ModelConfig& config);
+    Qwen3DecoderLayer(const ModelConfig& config);
+    explicit Qwen3DecoderLayer(const ModelConfig& config,int64_t layer_idx);
 
     Qwen3DecoderLayer(const Qwen3DecoderLayer&) = delete;
     Qwen3DecoderLayer& operator=(const Qwen3DecoderLayer&) = delete;
@@ -163,6 +164,7 @@ public:
     void load_weights(WeightMap& weights, const std::string& prefix);
 
 private:
+    int64_t layer_idx_ = -1;
     int64_t hidden_size_ = 0;
     Qwen3Attention self_attn_;
     Qwen3MLP mlp_;

@@ -2,7 +2,6 @@
 
 #include <cstring>
 #include <stdexcept>
-#include <string>
 #include <vector>
 
 #include <cuda_runtime.h>

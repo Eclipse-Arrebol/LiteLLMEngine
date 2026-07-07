@@ -210,3 +210,8 @@ add_test(NAME test_kv_cache COMMAND test_kv_cache)
 add_executable(test_kv_cache_update tests/test_kv_cache_update.cpp)
 target_link_libraries(test_kv_cache_update PRIVATE litellm_engine_core)
 add_test(NAME test_kv_cache_update COMMAND test_kv_cache_update)
+
+
+add_executable(test_qwen3_kv_cache_write tests/test_qwen3_kv_cache_write.cpp)
+target_link_libraries(test_qwen3_kv_cache_write PRIVATE litellm_engine_core)
+add_test(NAME test_qwen3_kv_cache_write COMMAND test_qwen3_kv_cache_write)

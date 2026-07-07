@@ -3,6 +3,7 @@
 #include "ops/copy.hpp"
 #include "ops/attention.hpp"
 #include "ops/add.hpp"
+#include "engine/kv_cache.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -225,15 +226,27 @@ void Qwen3Attention::forward(
     }
 
     if (context.position_ids == nullptr) {
-        throw std::runtime_error("Qwen3Attention ForwardContext.position_ids is null");
-    }
+            throw std::runtime_error("Qwen3Attention ForwardContext.position_ids is null");
+        }
 
-    if (context.use_cache) {
-        throw std::runtime_error("Qwen3Attention KV cache is not supported yet");
-    }
+        if (context.use_cache) {
+            if (context.kv_cache == nullptr) {
+                throw std::runtime_error(
+                    "Qwen3Attention use_cache=true but kv_cache is null"
+                );
+            }
+
+            if (context.layer_idx < 0) {
+                throw std::runtime_error(
+                    "Qwen3Attention use_cache=true but layer_idx is invalid"
+                );
+            }
+        }
 
     if (context.past_len != 0) {
-        throw std::runtime_error("Qwen3Attention past_len is not supported yet");
+        throw std::runtime_error(
+            "Qwen3Attention past_len is not supported yet"
+        );
     }
 
     const Tensor& position_ids = *context.position_ids;
@@ -372,6 +385,14 @@ void Qwen3Attention::forward(
 
     rotary_.apply(q_3d, k_3d, position_ids, q_rot, k_rot);
 
+    if (context.use_cache) {
+        context.kv_cache->update_layer(
+            context.layer_idx,
+            k_rot,
+            v_3d
+        );
+    }
+
     Tensor attn_out_3d(
         {num_tokens, num_attention_heads_, head_dim_},
         DType::FP32,
@@ -391,8 +412,15 @@ void Qwen3Attention::forward(
     o_proj_.forward(attn_out_flat, output);
 }
 
-Qwen3DecoderLayer::Qwen3DecoderLayer(const ModelConfig& config)
-    : hidden_size_(config.hidden_size),
+Qwen3DecoderLayer::Qwen3DecoderLayer(
+    const ModelConfig& config
+)
+    : Qwen3DecoderLayer(config, -1) {
+}
+
+Qwen3DecoderLayer::Qwen3DecoderLayer(const ModelConfig& config,int64_t layer_idx)
+    : layer_idx_(layer_idx),
+      hidden_size_(config.hidden_size),
       self_attn_(config),
       mlp_(config),
       input_layernorm_(config.rms_norm_eps),
@@ -433,6 +461,12 @@ void Qwen3DecoderLayer::forward(
         );
     }
 
+    if (context.use_cache && layer_idx_ < 0) {
+        throw std::runtime_error(
+            "Qwen3DecoderLayer use_cache=true but layer_idx is invalid"
+        );
+    }
+
     if (hidden_states.dtype() != DType::FP32) {
         throw std::runtime_error("Qwen3DecoderLayer hidden_states must be FP32");
     }
@@ -464,6 +498,9 @@ void Qwen3DecoderLayer::forward(
     const int64_t num_tokens = hidden_states.shape()[0];
     const Device device = hidden_states.device();
 
+    ForwardContext layer_context = context;
+    layer_context.layer_idx = layer_idx_;
+
     Tensor normed_1(
         {num_tokens, hidden_size_},
         DType::FP32,
@@ -483,7 +520,7 @@ void Qwen3DecoderLayer::forward(
     );
 
     input_layernorm_.forward(hidden_states, normed_1);
-    self_attn_.forward(normed_1, context, attn_out);
+    self_attn_.forward(normed_1, layer_context, attn_out);
 
     tensor_add(hidden_states, attn_out, residual_after_attn);
 
@@ -514,7 +551,7 @@ Qwen3Model::Qwen3Model(const ModelConfig& config)
     layers_.reserve(static_cast<size_t>(config_.num_hidden_layers));
 
     for (int i = 0; i < config_.num_hidden_layers; ++i) {
-        layers_.emplace_back(config_);
+        layers_.emplace_back(config_,i);
     }
 }
 

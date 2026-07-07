@@ -323,6 +323,7 @@ rust
   --verbose
 ```
 
+ctest --test-dir build --output-on-failure
 
 ## Performance Benchmark
 
@@ -349,3 +350,4 @@ Benchmark command:
   --benchmark \
   --benchmark-requests 32 \
   --benchmark-warmup 1
+```
