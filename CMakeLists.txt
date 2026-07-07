@@ -215,3 +215,13 @@ add_test(NAME test_kv_cache_update COMMAND test_kv_cache_update)
 add_executable(test_qwen3_kv_cache_write tests/test_qwen3_kv_cache_write.cpp)
 target_link_libraries(test_qwen3_kv_cache_write PRIVATE litellm_engine_core)
 add_test(NAME test_qwen3_kv_cache_write COMMAND test_qwen3_kv_cache_write)
+
+
+add_executable(test_attention_kv_cache tests/test_attention_kv_cache.cpp)
+target_link_libraries(test_attention_kv_cache PRIVATE litellm_engine_core)
+add_test(NAME test_attention_kv_cache COMMAND test_attention_kv_cache)
+
+
+add_executable(test_generation_kv_cache tests/test_generation_kv_cache.cpp)
+target_link_libraries(test_generation_kv_cache PRIVATE litellm_engine_core)
+add_test(NAME test_generation_kv_cache COMMAND test_generation_kv_cache)

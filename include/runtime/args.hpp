@@ -25,6 +25,9 @@ struct Args {
     bool benchmark = false;
     int32_t benchmark_requests = 32;
     int32_t benchmark_warmup = 1;
+
+    //kv cache 相关参数
+    bool use_kv_cache = false;
 };
 
 Args parse_args(int argc, char** argv);

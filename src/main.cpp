@@ -45,6 +45,7 @@ int main(int argc, char** argv) {
         std::cout << "  benchmark:       " << args.benchmark << "\n";
         std::cout << "  benchmark_requests:       " << args.benchmark_requests << "\n";
         std::cout << "  benchmark_warmup:       " << args.benchmark_warmup << "\n";
+        std::cout << "  use_kv_cache:       " << args.use_kv_cache << "\n";
 
         
         std::cout << "\nLoading model metadata...\n";
@@ -158,8 +159,12 @@ int main(int argc, char** argv) {
             bench_options.eos_token_id = args.eos_token_id.value_or(-1);
             bench_options.device = device;
             bench_options.verbose = false;
+            bench_options.use_kv_cache = args.use_kv_cache;
 
             std::cout << "\nRunning generation benchmark...\n";
+            std::cout << "  Mode:            "
+                    << (bench_options.use_kv_cache ? "KV cache" : "No KV cache")
+                    << "\n";
             std::cout << "  Requests:        " << bench_options.num_requests << "\n";
             std::cout << "  Warmup requests: " << bench_options.warmup_requests << "\n";
             std::cout << "  Prompt tokens:   " << input_ids.size() << "\n";
@@ -186,11 +191,17 @@ int main(int argc, char** argv) {
         std::cout << "\nGenerating...\n";
 
         const std::vector<int32_t> generated_ids =
-            lite_llm::generate_greedy(
-                model,
-                input_ids,
-                gen_options
-            );
+            args.use_kv_cache
+                ? lite_llm::generate_greedy_with_kv_cache(
+                    model,
+                    input_ids,
+                    gen_options
+                )
+                : lite_llm::generate_greedy(
+                    model,
+                    input_ids,
+                    gen_options
+                );
 
         std::vector<int32_t> new_ids;
 

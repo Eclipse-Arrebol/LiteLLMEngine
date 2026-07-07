@@ -7,6 +7,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <iostream>
 
 namespace lite_llm {
 
@@ -409,7 +410,31 @@ void Qwen3Attention::forward(
         device
     );
 
+
+    /*
+    ######################################################################
+    prefill:
+    use_cache=true, past_len=0, seq_len=N
+    写入当前 K/V 到 cache
+    仍然用 flash_attention(q_rot, k_rot, v_3d)
+
+    decode:
+    use_cache=true, past_len=N, seq_len=1
+    写入当前 token K/V 到 cache[N]
+    用 flash_attention_kv_cache(q_rot, cache.key, cache.value, N+1)
+    ######################################################################
+    */
+
     if (context.use_cache && context.past_len > 0) {
+        static int printed = 0;
+        if (printed < 10) {
+            std::cerr << "[attention] use kv cache decode"
+                    << ", layer_idx=" << context.layer_idx
+                    << ", past_len=" << context.past_len
+                    << ", num_tokens=" << num_tokens
+                    << std::endl;
+            ++printed;
+        }
         const LayerKVCache& layer_cache =
             context.kv_cache->layer(context.layer_idx);
 

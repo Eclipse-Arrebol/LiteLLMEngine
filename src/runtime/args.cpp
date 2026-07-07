@@ -112,6 +112,8 @@ Args parse_args(int argc, char** argv) {
             args.benchmark_requests = std::stoi(get_arg_value(i, argc, argv, arg));
         } else if (arg == "--benchmark-warmup" || starts_with(arg, "--benchmark-warmup=")) {
             args.benchmark_warmup = std::stoi(get_arg_value(i, argc, argv, arg));
+        } else if (arg == "--use-kv-cache") {
+            args.use_kv_cache = true;
         } else {
             throw std::runtime_error("Unknown argument: " + arg);
         }

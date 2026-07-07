@@ -14,6 +14,7 @@ struct GenerationBenchmarkOptions {
     int32_t warmup_requests = 1;
     int32_t eos_token_id = -1;
     bool verbose = false;
+    bool use_kv_cache = false;
     Device device = Device::CUDA;
 };
 
@@ -26,6 +27,8 @@ struct GenerationBenchmarkResult {
     double total_time_ms = 0.0;
     double tok_per_sec = 0.0;
     double ms_per_token = 0.0;
+
+    bool use_kv_cache = false;
 };
 
 GenerationBenchmarkResult benchmark_generate_greedy(

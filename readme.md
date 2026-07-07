@@ -325,18 +325,15 @@ rust
 
 ctest --test-dir build --output-on-failure
 
-## Performance Benchmark
+## Performance Roadmap
 
-Current benchmark is measured on Qwen3-0.6B with greedy decoding, single-process execution, 32 requests, 17 prompt tokens per request, and 32 generated tokens per request.
+| Lesson | Mode | Throughput | Key Optimization | Multiplier |
+|---|---|---:|---|---:|
+| 3 | Baseline, 32 new tokens | 10.12 tok/s | Full-sequence forward every decoding step | 1.00x |
+| 3 | Baseline, 128 new tokens | 7.66 tok/s | Full-sequence forward; cost grows with sequence length | 1.00x |
+| 4 | KV cache, 128 new tokens | 14.03 tok/s | Reuse past key/value states during decode | 1.83x |
 
-| Lesson | Mode | Requests | Prompt Tokens | Max New Tokens | Total New Tokens | Total Time | Throughput | Latency / Token | Key Optimization | Multiplier |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|
-| 3 | Baseline | 32 | 17 | 32 | 1024 | 101.189 s | 10.12 tok/s | 98.82 ms/token | No KV cache; full-sequence forward every decoding step | 1.0x |
-| 4 | KV Cache | 32 | 17 | 32 | TBD | TBD | TBD | TBD | Reuse past key/value states during decode | TBD |
-| 5 | Pre-allocated KV Cache | 32 | 17 | 32 | TBD | TBD | TBD | TBD | Avoid repeated cache allocation | TBD |
-| 6 | Paged KV Cache | 32 | 17 | 32 | TBD | TBD | TBD | TBD | Improve memory efficiency for long/batched requests | TBD |
-| 7 | Static Batching | 32 | 17 | 32 | TBD | TBD | TBD | TBD | Process multiple requests together | TBD |
-| 8 | Continuous Batching | 32 | 17 | 32 | TBD | TBD | TBD | TBD | Dynamically merge active decoding requests | TBD |
+Current KV cache implementation is functionally correct. Further speedups require reducing temporary Tensor allocation, improving single-token CUDA kernels, and adding batching.
 
 Benchmark command:
 

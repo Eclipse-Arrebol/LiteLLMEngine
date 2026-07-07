@@ -25,4 +25,10 @@ std::vector<int32_t> generate_greedy(
     const GreedyGenerateOptions& options
 );
 
+std::vector<int32_t> generate_greedy_with_kv_cache(
+    const Qwen3ForCausalLM& model,
+    const std::vector<int32_t>& input_ids,
+    const GreedyGenerateOptions& options
+);
+
 }  // namespace lite_llm

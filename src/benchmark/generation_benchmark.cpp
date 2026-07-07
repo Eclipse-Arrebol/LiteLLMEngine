@@ -62,7 +62,19 @@ GenerationBenchmarkResult benchmark_generate_greedy(
     gen_options.device = options.device;
 
     for (int32_t i = 0; i < options.warmup_requests; ++i) {
-        (void)generate_greedy(model, input_ids, gen_options);
+        if (options.use_kv_cache) {
+            (void)generate_greedy_with_kv_cache(
+                model,
+                input_ids,
+                gen_options
+            );
+        } else {
+            (void)generate_greedy(
+                model,
+                input_ids,
+                gen_options
+            );
+        }
     }
 
     sync_device_if_needed(options.device);
@@ -72,8 +84,21 @@ GenerationBenchmarkResult benchmark_generate_greedy(
     int64_t total_new_tokens = 0;
 
     for (int32_t i = 0; i < options.num_requests; ++i) {
-        std::vector<int32_t> output_ids =
-            generate_greedy(model, input_ids, gen_options);
+        std::vector<int32_t> output_ids;
+
+        if (options.use_kv_cache) {
+            output_ids = generate_greedy_with_kv_cache(
+                model,
+                input_ids,
+                gen_options
+            );
+        } else {
+            output_ids = generate_greedy(
+                model,
+                input_ids,
+                gen_options
+            );
+        }
 
         if (output_ids.size() < input_ids.size()) {
             throw std::runtime_error("benchmark_generate_greedy: invalid output length");
@@ -95,6 +120,7 @@ GenerationBenchmarkResult benchmark_generate_greedy(
     result.max_new_tokens = options.max_new_tokens;
     result.total_new_tokens = total_new_tokens;
     result.total_time_ms = elapsed_ms;
+    result.use_kv_cache = options.use_kv_cache;
 
     if (total_new_tokens > 0 && elapsed_s > 0.0) {
         result.tok_per_sec =
@@ -110,6 +136,9 @@ void print_generation_benchmark_result(
     const GenerationBenchmarkResult& result
 ) {
     std::cout << "\nGeneration benchmark result\n";
+    std::cout << "  Mode:             "
+              << (result.use_kv_cache ? "KV cache" : "No KV cache")
+              << "\n";
     std::cout << "  Requests:         " << result.num_requests << "\n";
     std::cout << "  Prompt tokens:    " << result.prompt_tokens << "\n";
     std::cout << "  Max new tokens:   " << result.max_new_tokens << "\n";
