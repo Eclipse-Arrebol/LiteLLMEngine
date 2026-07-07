@@ -322,3 +322,30 @@ rust
   --eos-token-id 151645 \
   --verbose
 ```
+
+
+## Performance Benchmark
+
+Current benchmark is measured on Qwen3-0.6B with greedy decoding, single-process execution, 32 requests, 17 prompt tokens per request, and 32 generated tokens per request.
+
+| Lesson | Mode | Requests | Prompt Tokens | Max New Tokens | Total New Tokens | Total Time | Throughput | Latency / Token | Key Optimization | Multiplier |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|
+| 3 | Baseline | 32 | 17 | 32 | 1024 | 101.189 s | 10.12 tok/s | 98.82 ms/token | No KV cache; full-sequence forward every decoding step | 1.0x |
+| 4 | KV Cache | 32 | 17 | 32 | TBD | TBD | TBD | TBD | Reuse past key/value states during decode | TBD |
+| 5 | Pre-allocated KV Cache | 32 | 17 | 32 | TBD | TBD | TBD | TBD | Avoid repeated cache allocation | TBD |
+| 6 | Paged KV Cache | 32 | 17 | 32 | TBD | TBD | TBD | TBD | Improve memory efficiency for long/batched requests | TBD |
+| 7 | Static Batching | 32 | 17 | 32 | TBD | TBD | TBD | TBD | Process multiple requests together | TBD |
+| 8 | Continuous Batching | 32 | 17 | 32 | TBD | TBD | TBD | TBD | Dynamically merge active decoding requests | TBD |
+
+Benchmark command:
+
+```bash
+./build/LiteLLMEngine \
+  --model /root/rivermind-data/Qwen_Qwen3-0.6B \
+  --prompt "Introduce CUDA briefly." \
+  --max-tokens 32 \
+  --device cuda \
+  --temperature 0 \
+  --benchmark \
+  --benchmark-requests 32 \
+  --benchmark-warmup 1

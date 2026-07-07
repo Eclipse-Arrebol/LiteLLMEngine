@@ -106,10 +106,17 @@ Args parse_args(int argc, char** argv) {
             args.device = get_arg_value(i, argc, argv, arg);
         } else if (arg == "--verbose") {
             args.verbose = true;
+        } else if (arg == "--benchmark") {
+            args.benchmark = true;
+        } else if (arg == "--benchmark-requests" || starts_with(arg, "--benchmark-requests=")) {
+            args.benchmark_requests = std::stoi(get_arg_value(i, argc, argv, arg));
+        } else if (arg == "--benchmark-warmup" || starts_with(arg, "--benchmark-warmup=")) {
+            args.benchmark_warmup = std::stoi(get_arg_value(i, argc, argv, arg));
         } else {
             throw std::runtime_error("Unknown argument: " + arg);
         }
     }
+    
 
     if (args.model.empty()) {
         throw std::runtime_error("Missing required argument: --model");

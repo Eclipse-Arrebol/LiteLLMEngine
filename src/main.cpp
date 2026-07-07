@@ -13,6 +13,8 @@
 #include "tokenizer/hf_tokenizer.hpp"
 #include "tokenizer/qwen3_chat_template.hpp"
 
+#include "benchmark/generation_benchmark.hpp"
+
 #include <exception>
 #include <iostream>
 #include <memory>
@@ -40,6 +42,9 @@ int main(int argc, char** argv) {
         std::cout << "  verbose:       " << args.verbose << "\n";
         std::cout << "  Device arg:  " << device_arg << "\n";
         std::cout << "  Eos Token Id:  " << args.eos_token_id.value_or(-1) << "\n";
+        std::cout << "  benchmark:       " << args.benchmark << "\n";
+        std::cout << "  benchmark_requests:       " << args.benchmark_requests << "\n";
+        std::cout << "  benchmark_warmup:       " << args.benchmark_warmup << "\n";
 
         
         std::cout << "\nLoading model metadata...\n";
@@ -49,6 +54,12 @@ int main(int argc, char** argv) {
 
         lite_llm::print_model_config(model_config);
 
+
+        /*  
+            #######################
+            ###### tokenizer ######
+            #######################
+        */  
         std::vector<int32_t> input_ids;
         std::unique_ptr<lite_llm::HFTokenizer> tokenizer;
 
@@ -84,6 +95,12 @@ int main(int argc, char** argv) {
             std::cout << "  " << lite_llm::format_token_ids(input_ids) << "\n";
             std::cout << "Input length: " << input_ids.size() << "\n";
         }
+
+        /*  
+            #########################
+            ###### load weight ######
+            #########################
+        */ 
 
         const std::string weight_dir =
             model_files.model_dir + "/converted_weights";
@@ -126,12 +143,46 @@ int main(int argc, char** argv) {
             std::cout << "Current generation uses greedy argmax only.\n";
         }
 
+        
+        /*  
+            #########################
+            ####### benchmark #######
+            #########################
+        */ 
+
+        if (args.benchmark) {
+            lite_llm::GenerationBenchmarkOptions bench_options;
+            bench_options.num_requests = args.benchmark_requests;
+            bench_options.warmup_requests = args.benchmark_warmup;
+            bench_options.max_new_tokens = args.max_tokens;
+            bench_options.eos_token_id = args.eos_token_id.value_or(-1);
+            bench_options.device = device;
+            bench_options.verbose = false;
+
+            std::cout << "\nRunning generation benchmark...\n";
+            std::cout << "  Requests:        " << bench_options.num_requests << "\n";
+            std::cout << "  Warmup requests: " << bench_options.warmup_requests << "\n";
+            std::cout << "  Prompt tokens:   " << input_ids.size() << "\n";
+            std::cout << "  Max new tokens:  " << bench_options.max_new_tokens << "\n";
+
+            const lite_llm::GenerationBenchmarkResult bench_result =
+                lite_llm::benchmark_generate_greedy(
+                    model,
+                    input_ids,
+                    bench_options
+                );
+
+            lite_llm::print_generation_benchmark_result(bench_result);
+
+            return 0;
+        }
+
         lite_llm::GreedyGenerateOptions gen_options;
         gen_options.max_new_tokens = args.max_tokens;
         gen_options.eos_token_id = args.eos_token_id.value_or(-1);
         gen_options.device = device;
         gen_options.verbose = args.verbose;
-
+        
         std::cout << "\nGenerating...\n";
 
         const std::vector<int32_t> generated_ids =

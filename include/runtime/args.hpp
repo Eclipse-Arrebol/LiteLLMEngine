@@ -20,6 +20,11 @@ struct Args {
     float top_p = 0.9f;
     bool verbose = false;
     std::optional<std::string> device = std::nullopt;
+
+    // 评估的相关参数
+    bool benchmark = false;
+    int32_t benchmark_requests = 32;
+    int32_t benchmark_warmup = 1;
 };
 
 Args parse_args(int argc, char** argv);
