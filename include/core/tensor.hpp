@@ -60,6 +60,13 @@ public:
     void copy_from_cpu(const void* src, size_t bytes);
     void copy_to_cpu(void* dst, size_t bytes) const;
 
+    void copy_from_tensor(
+        const Tensor& src,
+        size_t dst_offset_bytes,
+        size_t src_offset_bytes,
+        size_t bytes
+    );
+
 private:
     void release_() noexcept;
     void allocate_();

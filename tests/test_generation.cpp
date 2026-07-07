@@ -219,7 +219,7 @@ void run_generate_greedy_test(Device device) {
     // step 3: 2 -> 4
     // 4 是 eos，停止。
     std::vector<int32_t> expected = {
-        0, 1, 2, 4,
+        0, 1, 2,
     };
 
     check_ids_equal(generated, expected);

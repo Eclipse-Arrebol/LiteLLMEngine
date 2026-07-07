@@ -128,6 +128,50 @@ void Tensor::copy_to_cpu(void* dst, size_t bytes) const {
     }
 }
 
+void Tensor::copy_from_tensor(
+    const Tensor& src,
+    size_t dst_offset_bytes,
+    size_t src_offset_bytes,
+    size_t bytes
+) {
+    if (data_ == nullptr) {
+        throw std::runtime_error("copy_from_tensor called on empty dst tensor");
+    }
+
+    if (src.data() == nullptr) {
+        throw std::runtime_error("copy_from_tensor called with empty src tensor");
+    }
+
+    if (device_ != src.device()) {
+        throw std::runtime_error("copy_from_tensor requires same device");
+    }
+
+    if (dst_offset_bytes + bytes > nbytes()) {
+        throw std::runtime_error("copy_from_tensor dst range exceeds tensor storage size");
+    }
+
+    if (src_offset_bytes + bytes > src.nbytes()) {
+        throw std::runtime_error("copy_from_tensor src range exceeds tensor storage size");
+    }
+
+    char* dst_ptr = static_cast<char*>(data_) + dst_offset_bytes;
+    const char* src_ptr =
+        static_cast<const char*>(src.data()) + src_offset_bytes;
+
+    if (device_ == Device::CPU) {
+        std::memcpy(dst_ptr, src_ptr, bytes);
+    } else if (device_ == Device::CUDA) {
+        CUDA_CHECK(cudaMemcpy(
+            dst_ptr,
+            src_ptr,
+            bytes,
+            cudaMemcpyDeviceToDevice
+        ));
+    } else {
+        throw std::runtime_error("Unsupported device in Tensor::copy_from_tensor()");
+    }
+}
+
 void Tensor::allocate_() {
     size_t bytes = nbytes();
 

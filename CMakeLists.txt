@@ -200,3 +200,13 @@ add_test(NAME test_token_ids COMMAND test_token_ids)
 add_executable(test_tensor_memory tests/test_tensor_memory.cpp)
 target_link_libraries(test_tensor_memory PRIVATE litellm_engine_core)
 add_test(NAME test_tensor_memory COMMAND test_tensor_memory)
+
+
+add_executable(test_kv_cache tests/test_kv_cache.cpp)
+target_link_libraries(test_kv_cache PRIVATE litellm_engine_core)
+add_test(NAME test_kv_cache COMMAND test_kv_cache)
+
+
+add_executable(test_kv_cache_update tests/test_kv_cache_update.cpp)
+target_link_libraries(test_kv_cache_update PRIVATE litellm_engine_core)
+add_test(NAME test_kv_cache_update COMMAND test_kv_cache_update)
