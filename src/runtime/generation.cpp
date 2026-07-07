@@ -3,6 +3,7 @@
 #include "core/tensor.hpp"
 #include "ops/argmax.hpp"
 #include "engine/kv_cache.hpp"
+#include "core/tensor_memory_tracker.hpp"
 
 #include <stdexcept>
 #include <vector>
@@ -230,21 +231,24 @@ std::vector<int32_t> generate_greedy_with_kv_cache(
         context.use_cache = true;
         context.kv_cache = &kv_cache;
 
-        const double prefill_start_ms = now_ms_for_generation();
-
+        
+        const TensorMemorySnapshot mem_before_prefill = tensor_memory_snapshot();
         model.forward(input_ids_tensor, context, logits);
         
-        sync_generation_device(options.device);
-        
-        const double prefill_end_ms = now_ms_for_generation();
+        const TensorMemorySnapshot mem_after_prefill =
+            tensor_memory_snapshot();
 
         if (options.verbose) {
-            std::cerr << "[generate_kv] prefill_time_ms="
-                    << (prefill_end_ms - prefill_start_ms)
-                    << ", seq_len="
-                    << seq_len
-                    << std::endl;
+            print_tensor_memory_delta(
+                "generate_kv prefill forward",
+                mem_before_prefill,
+                mem_after_prefill
+            );
         }
+        
+        
+
+
         // 如果 Qwen3Model::forward 已经正确调用 advance(seq_len)，
         // 那么这里 kv_cache.current_len() 应该等于 prompt_len。
         if (kv_cache.current_len() != seq_len) {
@@ -306,16 +310,20 @@ std::vector<int32_t> generate_greedy_with_kv_cache(
         context.use_cache = true;
         context.kv_cache = &kv_cache;
 
-        const double decode_start_ms = now_ms_for_generation();
+        const TensorMemorySnapshot mem_before_decode =
+            tensor_memory_snapshot();
+
         model.forward(input_ids_tensor, context, logits);
-        sync_generation_device(options.device);
-        const double decode_end_ms = now_ms_for_generation();
+
+        const TensorMemorySnapshot mem_after_decode =
+            tensor_memory_snapshot();
+
         if (options.verbose) {
-            std::cerr << "[generate_kv] decode_time_ms="
-                    << (decode_end_ms - decode_start_ms)
-                    << ", past_len="
-                    << past_len
-                    << std::endl;
+            print_tensor_memory_delta(
+                "generate_kv decode forward",
+                mem_before_decode,
+                mem_after_decode
+            );
         }
 
 

@@ -1,6 +1,7 @@
 #include "core/tensor.hpp"
 
 #include "core/cuda_utils.hpp"
+#include "core/tensor_memory_tracker.hpp"
 
 #include <cuda_runtime.h>
 
@@ -191,12 +192,15 @@ void Tensor::allocate_() {
     } else {
         throw std::runtime_error("Unsupported device in Tensor::allocate_()");
     }
+    tensor_memory_record_allocate(device_, bytes);
 }
 
 void Tensor::release_() noexcept {
     if (data_ == nullptr) {
         return;
     }
+    const size_t bytes = nbytes();
+    tensor_memory_record_free(device_, bytes);
 
     if (device_ == Device::CPU) {
         std::free(data_);
