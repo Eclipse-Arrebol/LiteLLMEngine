@@ -39,7 +39,9 @@ int main(int argc, char** argv) {
         std::cout << "  Top-p:       " << args.top_p << "\n";
         std::cout << "  verbose:       " << args.verbose << "\n";
         std::cout << "  Device arg:  " << device_arg << "\n";
+        std::cout << "  Eos Token Id:  " << args.eos_token_id.value_or(-1) << "\n";
 
+        
         std::cout << "\nLoading model metadata...\n";
 
         auto model_files = lite_llm::ensure_model_files(args.model);
@@ -126,7 +128,7 @@ int main(int argc, char** argv) {
 
         lite_llm::GreedyGenerateOptions gen_options;
         gen_options.max_new_tokens = args.max_tokens;
-        gen_options.eos_token_id = -1;
+        gen_options.eos_token_id = args.eos_token_id.value_or(-1);
         gen_options.device = device;
         gen_options.verbose = args.verbose;
 

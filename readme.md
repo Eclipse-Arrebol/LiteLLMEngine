@@ -308,6 +308,7 @@ private:
 ```
 sudo apt install -y nlohmann-json3-dev
 ```
+rust
 
 
 ## 运行命令
