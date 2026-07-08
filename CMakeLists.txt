@@ -225,3 +225,8 @@ add_test(NAME test_attention_kv_cache COMMAND test_attention_kv_cache)
 add_executable(test_generation_kv_cache tests/test_generation_kv_cache.cpp)
 target_link_libraries(test_generation_kv_cache PRIVATE litellm_engine_core)
 add_test(NAME test_generation_kv_cache COMMAND test_generation_kv_cache)
+
+
+add_executable(test_request_manager tests/test_request_manager.cpp)
+target_link_libraries(test_request_manager PRIVATE litellm_engine_core)
+add_test(NAME test_request_manager COMMAND test_request_manager)
