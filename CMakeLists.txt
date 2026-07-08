@@ -40,7 +40,7 @@ target_link_libraries(litellm_engine_core PUBLIC
 )
 
 set_target_properties(litellm_engine_core PROPERTIES
-    CUDA_STANDARD 17
+    CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
 
@@ -230,3 +230,13 @@ add_test(NAME test_generation_kv_cache COMMAND test_generation_kv_cache)
 add_executable(test_request_manager tests/test_request_manager.cpp)
 target_link_libraries(test_request_manager PRIVATE litellm_engine_core)
 add_test(NAME test_request_manager COMMAND test_request_manager)
+
+
+add_executable(test_paged_kv_cache tests/test_paged_kv_cache.cpp)
+target_link_libraries(test_paged_kv_cache PRIVATE litellm_engine_core)
+add_test(NAME test_paged_kv_cache COMMAND test_paged_kv_cache)
+
+
+add_executable(test_block_pool tests/test_block_pool.cpp)
+target_link_libraries(test_block_pool PRIVATE litellm_engine_core)
+add_test(NAME test_block_pool COMMAND test_block_pool)
