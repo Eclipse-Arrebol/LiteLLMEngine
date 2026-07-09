@@ -237,6 +237,12 @@ target_link_libraries(test_paged_kv_cache PRIVATE litellm_engine_core)
 add_test(NAME test_paged_kv_cache COMMAND test_paged_kv_cache)
 
 
-add_executable(test_block_pool tests/test_block_pool.cpp)
-target_link_libraries(test_block_pool PRIVATE litellm_engine_core)
-add_test(NAME test_block_pool COMMAND test_block_pool)
+
+add_executable(test_block_table_manager tests/test_block_table_manager.cpp)
+target_link_libraries(test_block_table_manager PRIVATE litellm_engine_core)
+add_test(NAME test_block_table_manager COMMAND test_block_table_manager)
+
+
+add_executable(test_request_block_table tests/test_request_block_table.cpp)
+target_link_libraries(test_request_block_table PRIVATE litellm_engine_core)
+add_test(NAME test_request_block_table COMMAND test_request_block_table)

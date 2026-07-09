@@ -1,4 +1,3 @@
-// include/engine/request.hpp
 #pragma once
 
 #include <cassert>
@@ -7,19 +6,22 @@
 
 namespace lite_llm {
 
+class BlockTableManager;
+
 enum class RequestStatus {
     WaitingPrefill,
     Decoding,
     Finished
 };
 
-struct GenerationRequest {
+class GenerationRequest {
+public:
     int64_t request_id = -1;
 
-    // prompt + already generated tokens
+    // prompt + generated tokens
     std::vector<int32_t> input_ids;
 
-    // only generated tokens, used as final output
+    // generated tokens only
     std::vector<int32_t> generated_ids;
 
     int64_t prompt_len = 0;
@@ -28,11 +30,12 @@ struct GenerationRequest {
 
     int32_t eos_token_id = -1;
 
-    // reserved for future PagedKVCache page table
+    // index into BlockTableManager
     int64_t table_idx = -1;
 
     RequestStatus status = RequestStatus::WaitingPrefill;
 
+public:
     int64_t device_len() const {
         return static_cast<int64_t>(input_ids.size());
     }
@@ -73,6 +76,33 @@ struct GenerationRequest {
         assert(cached_len <= device_len());
         assert(device_len() <= max_device_len());
     }
+
+public:
+    static int64_t num_required_blocks(
+        int64_t token_len,
+        int64_t page_size
+    );
+
+    void ensure_blocks(
+        BlockTableManager& table_manager,
+        int64_t token_len,
+        int64_t page_size
+    );
+
+    void ensure_device_blocks(
+        BlockTableManager& table_manager,
+        int64_t page_size
+    );
+
+    void release_blocks(
+        BlockTableManager& table_manager
+    );
+
+    int64_t physical_token_index(
+        const BlockTableManager& table_manager,
+        int64_t logical_token_index,
+        int64_t page_size
+    ) const;
 };
 
 }  // namespace lite_llm
