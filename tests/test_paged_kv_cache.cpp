@@ -1,5 +1,6 @@
 // tests/test_paged_kv_cache.cpp
 
+#include "engine/block_table_manager.hpp"
 #include "engine/paged_kv_cache.hpp"
 
 #include <cassert>
@@ -9,6 +10,16 @@
 #include <vector>
 
 using namespace lite_llm;
+
+template <typename Fn>
+static bool thrown_runtime_error(Fn fn) {
+    try {
+        fn();
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
+}
 
 static int64_t flat_index(
     int64_t token_idx,
@@ -22,6 +33,7 @@ static int64_t flat_index(
 
 static void fill_tensor_seq(Tensor& tensor, float base) {
     float* p = tensor.ptr<float>();
+
     for (size_t i = 0; i < tensor.numel(); ++i) {
         p[i] = base + static_cast<float>(i);
     }
@@ -78,18 +90,8 @@ static void test_constructor() {
     assert(cache.num_blocks() == 3);
     assert(cache.num_kv_heads() == 2);
     assert(cache.head_dim() == 3);
-    assert(cache.current_len() == 0);
 
     const LayerPagedKVCache& layer0 = cache.layer(0);
-
-    assert(layer0.page_table.size() == 3);
-
-    assert(layer0.page_table[0].key_block_id == 0);
-    assert(layer0.page_table[0].value_block_id == 0);
-    assert(layer0.page_table[1].key_block_id == 1);
-    assert(layer0.page_table[1].value_block_id == 1);
-    assert(layer0.page_table[2].key_block_id == 2);
-    assert(layer0.page_table[2].value_block_id == 2);
 
     assert(layer0.key_pool.shape().size() == 3);
     assert(layer0.key_pool.shape()[0] == 6);
@@ -102,82 +104,7 @@ static void test_constructor() {
     assert(layer0.value_pool.shape()[2] == 3);
 }
 
-static void test_update_without_advance() {
-    constexpr int64_t num_kv_heads = 2;
-    constexpr int64_t head_dim = 3;
-
-    ModelPagedKVCache cache(
-        1,
-        4,
-        2,
-        num_kv_heads,
-        head_dim,
-        DType::FP32,
-        Device::CPU
-    );
-
-    Tensor key(
-        std::vector<int64_t>{2, num_kv_heads, head_dim},
-        DType::FP32,
-        Device::CPU
-    );
-
-    Tensor value(
-        std::vector<int64_t>{2, num_kv_heads, head_dim},
-        DType::FP32,
-        Device::CPU
-    );
-
-    fill_kv(key, value, 10.0f, 100.0f);
-
-    cache.update_layer(0, key, value);
-
-    // update_layer 只写数据，不推进 current_len
-    assert(cache.current_len() == 0);
-
-    const LayerPagedKVCache& layer0 = cache.layer(0);
-
-    expect_token_equal(
-        key,
-        0,
-        layer0.key_pool,
-        0,
-        num_kv_heads,
-        head_dim
-    );
-
-    expect_token_equal(
-        key,
-        1,
-        layer0.key_pool,
-        1,
-        num_kv_heads,
-        head_dim
-    );
-
-    expect_token_equal(
-        value,
-        0,
-        layer0.value_pool,
-        0,
-        num_kv_heads,
-        head_dim
-    );
-
-    expect_token_equal(
-        value,
-        1,
-        layer0.value_pool,
-        1,
-        num_kv_heads,
-        head_dim
-    );
-
-    cache.advance(2);
-    assert(cache.current_len() == 2);
-}
-
-static void test_cross_page_update() {
+static void test_prefill_update() {
     constexpr int64_t num_kv_heads = 2;
     constexpr int64_t head_dim = 2;
     constexpr int64_t page_size = 2;
@@ -192,6 +119,13 @@ static void test_cross_page_update() {
         Device::CPU
     );
 
+    BlockTableManager table_manager(cache.num_blocks());
+
+    const int64_t table_idx = table_manager.allocate_table();
+
+    // prefill 5 tokens
+    table_manager.ensure_blocks(table_idx, 5, page_size);
+
     Tensor key(
         std::vector<int64_t>{5, num_kv_heads, head_dim},
         DType::FP32,
@@ -206,22 +140,30 @@ static void test_cross_page_update() {
 
     fill_kv(key, value, 10.0f, 100.0f);
 
-    cache.update_layer(0, key, value);
+    cache.update_layer(
+        0,
+        table_manager,
+        table_idx,
+        0,
+        key,
+        value
+    );
 
     const LayerPagedKVCache& layer0 = cache.layer(0);
 
     for (int64_t token_idx = 0; token_idx < 5; ++token_idx) {
-        const int64_t physical_key_token_idx =
-            layer0.physical_key_token_index(token_idx, page_size);
-
-        const int64_t physical_value_token_idx =
-            layer0.physical_value_token_index(token_idx, page_size);
+        const int64_t physical_token_idx =
+            table_manager.physical_token_index(
+                table_idx,
+                token_idx,
+                page_size
+            );
 
         expect_token_equal(
             key,
             token_idx,
             layer0.key_pool,
-            physical_key_token_idx,
+            physical_token_idx,
             num_kv_heads,
             head_dim
         );
@@ -230,17 +172,14 @@ static void test_cross_page_update() {
             value,
             token_idx,
             layer0.value_pool,
-            physical_value_token_idx,
+            physical_token_idx,
             num_kv_heads,
             head_dim
         );
     }
-
-    cache.advance(5);
-    assert(cache.current_len() == 5);
 }
 
-static void test_two_step_update_prefill_then_decode() {
+static void test_decode_update_with_start_pos() {
     constexpr int64_t num_kv_heads = 2;
     constexpr int64_t head_dim = 2;
     constexpr int64_t page_size = 2;
@@ -254,6 +193,13 @@ static void test_two_step_update_prefill_then_decode() {
         DType::FP32,
         Device::CPU
     );
+
+    BlockTableManager table_manager(cache.num_blocks());
+
+    const int64_t table_idx = table_manager.allocate_table();
+
+    // 先保证 token 0,1,2,3 都有 block
+    table_manager.ensure_blocks(table_idx, 4, page_size);
 
     Tensor key_prefill(
         std::vector<int64_t>{3, num_kv_heads, head_dim},
@@ -267,59 +213,56 @@ static void test_two_step_update_prefill_then_decode() {
         Device::CPU
     );
 
-    Tensor key_decode0(
+    Tensor key_decode(
         std::vector<int64_t>{1, num_kv_heads, head_dim},
         DType::FP32,
         Device::CPU
     );
 
-    Tensor value_decode0(
-        std::vector<int64_t>{1, num_kv_heads, head_dim},
-        DType::FP32,
-        Device::CPU
-    );
-
-    Tensor key_decode1(
-        std::vector<int64_t>{1, num_kv_heads, head_dim},
-        DType::FP32,
-        Device::CPU
-    );
-
-    Tensor value_decode1(
+    Tensor value_decode(
         std::vector<int64_t>{1, num_kv_heads, head_dim},
         DType::FP32,
         Device::CPU
     );
 
     fill_kv(key_prefill, value_prefill, 10.0f, 100.0f);
-    fill_kv(key_decode0, value_decode0, 1000.0f, 2000.0f);
-    fill_kv(key_decode1, value_decode1, 3000.0f, 4000.0f);
+    fill_kv(key_decode, value_decode, 1000.0f, 2000.0f);
 
-    cache.update_layer(0, key_prefill, value_prefill);
-    cache.advance(3);
+    // prefill 写 token 0,1,2
+    cache.update_layer(
+        0,
+        table_manager,
+        table_idx,
+        0,
+        key_prefill,
+        value_prefill
+    );
 
-    cache.update_layer(0, key_decode0, value_decode0);
-    cache.advance(1);
-
-    cache.update_layer(0, key_decode1, value_decode1);
-    cache.advance(1);
-
-    assert(cache.current_len() == 5);
+    // decode 写 token 3
+    cache.update_layer(
+        0,
+        table_manager,
+        table_idx,
+        3,
+        key_decode,
+        value_decode
+    );
 
     const LayerPagedKVCache& layer0 = cache.layer(0);
 
     for (int64_t token_idx = 0; token_idx < 3; ++token_idx) {
-        const int64_t physical_key_token_idx =
-            layer0.physical_key_token_index(token_idx, page_size);
-
-        const int64_t physical_value_token_idx =
-            layer0.physical_value_token_index(token_idx, page_size);
+        const int64_t physical_token_idx =
+            table_manager.physical_token_index(
+                table_idx,
+                token_idx,
+                page_size
+            );
 
         expect_token_equal(
             key_prefill,
             token_idx,
             layer0.key_pool,
-            physical_key_token_idx,
+            physical_token_idx,
             num_kv_heads,
             head_dim
         );
@@ -328,58 +271,41 @@ static void test_two_step_update_prefill_then_decode() {
             value_prefill,
             token_idx,
             layer0.value_pool,
-            physical_value_token_idx,
+            physical_token_idx,
             num_kv_heads,
             head_dim
         );
     }
 
     {
-        const int64_t logical_token_idx = 3;
+        const int64_t physical_token_idx =
+            table_manager.physical_token_index(
+                table_idx,
+                3,
+                page_size
+            );
 
         expect_token_equal(
-            key_decode0,
+            key_decode,
             0,
             layer0.key_pool,
-            layer0.physical_key_token_index(logical_token_idx, page_size),
+            physical_token_idx,
             num_kv_heads,
             head_dim
         );
 
         expect_token_equal(
-            value_decode0,
+            value_decode,
             0,
             layer0.value_pool,
-            layer0.physical_value_token_index(logical_token_idx, page_size),
-            num_kv_heads,
-            head_dim
-        );
-    }
-
-    {
-        const int64_t logical_token_idx = 4;
-
-        expect_token_equal(
-            key_decode1,
-            0,
-            layer0.key_pool,
-            layer0.physical_key_token_index(logical_token_idx, page_size),
-            num_kv_heads,
-            head_dim
-        );
-
-        expect_token_equal(
-            value_decode1,
-            0,
-            layer0.value_pool,
-            layer0.physical_value_token_index(logical_token_idx, page_size),
+            physical_token_idx,
             num_kv_heads,
             head_dim
         );
     }
 }
 
-static void test_custom_page_table_mapping() {
+static void test_two_requests_do_not_overlap() {
     constexpr int64_t num_kv_heads = 1;
     constexpr int64_t head_dim = 2;
     constexpr int64_t page_size = 2;
@@ -394,84 +320,165 @@ static void test_custom_page_table_mapping() {
         Device::CPU
     );
 
-    LayerPagedKVCache& layer0 = cache.layer(0);
+    BlockTableManager table_manager(cache.num_blocks());
 
-    // 手动打乱 logical page -> physical block 映射
-    layer0.page_table[0].key_block_id = 2;
-    layer0.page_table[0].value_block_id = 1;
+    const int64_t table0 = table_manager.allocate_table();
+    const int64_t table1 = table_manager.allocate_table();
 
-    layer0.page_table[1].key_block_id = 0;
-    layer0.page_table[1].value_block_id = 2;
+    table_manager.ensure_blocks(table0, 2, page_size);
+    table_manager.ensure_blocks(table1, 2, page_size);
 
-    layer0.page_table[2].key_block_id = 1;
-    layer0.page_table[2].value_block_id = 0;
+    assert(table0 == 0);
+    assert(table1 == 1);
 
-    Tensor key(
-        std::vector<int64_t>{4, num_kv_heads, head_dim},
+    assert(table_manager.table(table0)[0] == 0);
+    assert(table_manager.table(table1)[0] == 1);
+
+    Tensor key0(
+        std::vector<int64_t>{2, num_kv_heads, head_dim},
         DType::FP32,
         Device::CPU
     );
 
-    Tensor value(
-        std::vector<int64_t>{4, num_kv_heads, head_dim},
+    Tensor value0(
+        std::vector<int64_t>{2, num_kv_heads, head_dim},
         DType::FP32,
         Device::CPU
     );
 
-    fill_kv(key, value, 10.0f, 100.0f);
+    Tensor key1(
+        std::vector<int64_t>{2, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CPU
+    );
 
-    cache.update_layer(0, key, value);
+    Tensor value1(
+        std::vector<int64_t>{2, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CPU
+    );
 
-    // logical token 0,1 属于 logical page 0
-    // key 写到 physical block 2 -> physical token 4,5
-    // value 写到 physical block 1 -> physical token 2,3
-    expect_token_equal(key, 0, layer0.key_pool, 4, num_kv_heads, head_dim);
-    expect_token_equal(key, 1, layer0.key_pool, 5, num_kv_heads, head_dim);
-    expect_token_equal(value, 0, layer0.value_pool, 2, num_kv_heads, head_dim);
-    expect_token_equal(value, 1, layer0.value_pool, 3, num_kv_heads, head_dim);
+    fill_kv(key0, value0, 10.0f, 100.0f);
+    fill_kv(key1, value1, 1000.0f, 2000.0f);
 
-    // logical token 2,3 属于 logical page 1
-    // key 写到 physical block 0 -> physical token 0,1
-    // value 写到 physical block 2 -> physical token 4,5
-    expect_token_equal(key, 2, layer0.key_pool, 0, num_kv_heads, head_dim);
-    expect_token_equal(key, 3, layer0.key_pool, 1, num_kv_heads, head_dim);
-    expect_token_equal(value, 2, layer0.value_pool, 4, num_kv_heads, head_dim);
-    expect_token_equal(value, 3, layer0.value_pool, 5, num_kv_heads, head_dim);
+    cache.update_layer(
+        0,
+        table_manager,
+        table0,
+        0,
+        key0,
+        value0
+    );
+
+    cache.update_layer(
+        0,
+        table_manager,
+        table1,
+        0,
+        key1,
+        value1
+    );
+
+    const LayerPagedKVCache& layer0 = cache.layer(0);
+
+    for (int64_t token_idx = 0; token_idx < 2; ++token_idx) {
+        const int64_t physical0 =
+            table_manager.physical_token_index(
+                table0,
+                token_idx,
+                page_size
+            );
+
+        const int64_t physical1 =
+            table_manager.physical_token_index(
+                table1,
+                token_idx,
+                page_size
+            );
+
+        expect_token_equal(
+            key0,
+            token_idx,
+            layer0.key_pool,
+            physical0,
+            num_kv_heads,
+            head_dim
+        );
+
+        expect_token_equal(
+            value0,
+            token_idx,
+            layer0.value_pool,
+            physical0,
+            num_kv_heads,
+            head_dim
+        );
+
+        expect_token_equal(
+            key1,
+            token_idx,
+            layer0.key_pool,
+            physical1,
+            num_kv_heads,
+            head_dim
+        );
+
+        expect_token_equal(
+            value1,
+            token_idx,
+            layer0.value_pool,
+            physical1,
+            num_kv_heads,
+            head_dim
+        );
+    }
 }
 
 static void test_reset() {
+    constexpr int64_t num_kv_heads = 1;
+    constexpr int64_t head_dim = 2;
+    constexpr int64_t page_size = 2;
+
     ModelPagedKVCache cache(
         1,
         4,
-        2,
-        1,
-        2,
+        page_size,
+        num_kv_heads,
+        head_dim,
         DType::FP32,
         Device::CPU
     );
 
+    BlockTableManager table_manager(cache.num_blocks());
+
+    const int64_t table_idx = table_manager.allocate_table();
+
+    table_manager.ensure_blocks(table_idx, 2, page_size);
+
     Tensor key(
-        std::vector<int64_t>{2, 1, 2},
+        std::vector<int64_t>{2, num_kv_heads, head_dim},
         DType::FP32,
         Device::CPU
     );
 
     Tensor value(
-        std::vector<int64_t>{2, 1, 2},
+        std::vector<int64_t>{2, num_kv_heads, head_dim},
         DType::FP32,
         Device::CPU
     );
 
     fill_kv(key, value, 10.0f, 100.0f);
 
-    cache.update_layer(0, key, value);
-    cache.advance(2);
-
-    assert(cache.current_len() == 2);
+    cache.update_layer(
+        0,
+        table_manager,
+        table_idx,
+        0,
+        key,
+        value
+    );
 
     cache.reset();
-
-    assert(cache.current_len() == 0);
 
     const LayerPagedKVCache& layer0 = cache.layer(0);
 
@@ -487,87 +494,58 @@ static void test_reset() {
     }
 }
 
-static void test_invalid_layer_idx() {
+static void test_unallocated_logical_page_should_throw() {
+    constexpr int64_t num_kv_heads = 1;
+    constexpr int64_t head_dim = 2;
+    constexpr int64_t page_size = 2;
+
     ModelPagedKVCache cache(
         1,
         4,
-        2,
-        1,
-        2,
+        page_size,
+        num_kv_heads,
+        head_dim,
         DType::FP32,
         Device::CPU
     );
 
-    bool thrown = false;
+    BlockTableManager table_manager(cache.num_blocks());
 
-    try {
-        cache.layer(10);
-    } catch (const std::runtime_error&) {
-        thrown = true;
-    }
+    const int64_t table_idx = table_manager.allocate_table();
 
-    assert(thrown);
-}
-
-static void test_capacity_exceeded_by_update() {
-    ModelPagedKVCache cache(
-        1,
-        4,
-        2,
-        1,
-        2,
-        DType::FP32,
-        Device::CPU
-    );
+    // 只分配 token 0,1 对应的 page 0
+    table_manager.ensure_blocks(table_idx, 2, page_size);
 
     Tensor key(
-        std::vector<int64_t>{5, 1, 2},
+        std::vector<int64_t>{1, num_kv_heads, head_dim},
         DType::FP32,
         Device::CPU
     );
 
     Tensor value(
-        std::vector<int64_t>{5, 1, 2},
+        std::vector<int64_t>{1, num_kv_heads, head_dim},
         DType::FP32,
         Device::CPU
     );
 
     fill_kv(key, value, 10.0f, 100.0f);
 
-    bool thrown = false;
-
-    try {
-        cache.update_layer(0, key, value);
-    } catch (const std::runtime_error&) {
-        thrown = true;
-    }
-
-    assert(thrown);
-}
-
-static void test_capacity_exceeded_by_advance() {
-    ModelPagedKVCache cache(
-        1,
-        4,
-        2,
-        1,
-        2,
-        DType::FP32,
-        Device::CPU
-    );
-
-    bool thrown = false;
-
-    try {
-        cache.advance(5);
-    } catch (const std::runtime_error&) {
-        thrown = true;
-    }
+    // start_pos = 2 属于 logical page 1，但是只分配了 page 0
+    const bool thrown = thrown_runtime_error([&]() {
+        cache.update_layer(
+            0,
+            table_manager,
+            table_idx,
+            2,
+            key,
+            value
+        );
+    });
 
     assert(thrown);
 }
 
-static void test_shape_mismatch() {
+static void test_invalid_shape_should_throw() {
     ModelPagedKVCache cache(
         1,
         4,
@@ -577,6 +555,12 @@ static void test_shape_mismatch() {
         DType::FP32,
         Device::CPU
     );
+
+    BlockTableManager table_manager(cache.num_blocks());
+
+    const int64_t table_idx = table_manager.allocate_table();
+
+    table_manager.ensure_blocks(table_idx, 2, 2);
 
     Tensor key(
         std::vector<int64_t>{2, 2, 3},
@@ -592,100 +576,28 @@ static void test_shape_mismatch() {
 
     fill_kv(key, value, 10.0f, 100.0f);
 
-    bool thrown = false;
-
-    try {
-        cache.update_layer(0, key, value);
-    } catch (const std::runtime_error&) {
-        thrown = true;
-    }
-
-    assert(thrown);
-}
-
-static void test_seq_len_mismatch() {
-    ModelPagedKVCache cache(
-        1,
-        4,
-        2,
-        2,
-        3,
-        DType::FP32,
-        Device::CPU
-    );
-
-    Tensor key(
-        std::vector<int64_t>{2, 2, 3},
-        DType::FP32,
-        Device::CPU
-    );
-
-    Tensor value(
-        std::vector<int64_t>{3, 2, 3},
-        DType::FP32,
-        Device::CPU
-    );
-
-    fill_kv(key, value, 10.0f, 100.0f);
-
-    bool thrown = false;
-
-    try {
-        cache.update_layer(0, key, value);
-    } catch (const std::runtime_error&) {
-        thrown = true;
-    }
-
-    assert(thrown);
-}
-
-static void test_dtype_mismatch() {
-    ModelPagedKVCache cache(
-        1,
-        4,
-        2,
-        1,
-        2,
-        DType::FP32,
-        Device::CPU
-    );
-
-    Tensor key(
-        std::vector<int64_t>{2, 1, 2},
-        DType::FP16,
-        Device::CPU
-    );
-
-    Tensor value(
-        std::vector<int64_t>{2, 1, 2},
-        DType::FP32,
-        Device::CPU
-    );
-
-    bool thrown = false;
-
-    try {
-        cache.update_layer(0, key, value);
-    } catch (const std::runtime_error&) {
-        thrown = true;
-    }
+    const bool thrown = thrown_runtime_error([&]() {
+        cache.update_layer(
+            0,
+            table_manager,
+            table_idx,
+            0,
+            key,
+            value
+        );
+    });
 
     assert(thrown);
 }
 
 int main() {
     test_constructor();
-    test_update_without_advance();
-    test_cross_page_update();
-    test_two_step_update_prefill_then_decode();
-    test_custom_page_table_mapping();
+    test_prefill_update();
+    test_decode_update_with_start_pos();
+    test_two_requests_do_not_overlap();
     test_reset();
-    test_invalid_layer_idx();
-    test_capacity_exceeded_by_update();
-    test_capacity_exceeded_by_advance();
-    test_shape_mismatch();
-    test_seq_len_mismatch();
-    test_dtype_mismatch();
+    test_unallocated_logical_page_should_throw();
+    test_invalid_shape_should_throw();
 
     std::cout << "test_paged_kv_cache passed" << std::endl;
     return 0;
