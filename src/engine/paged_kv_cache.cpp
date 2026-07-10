@@ -162,6 +162,110 @@ void ModelPagedKVCache::update_layer(
     }
 }
 
+/**
+ * @brief 就从k pool里面把离散的数据整理成连续的output输出出来
+ * 
+ * @param layer_idx 
+ * @param table_manager 
+ * @param table_idx 
+ * @param start_pos 
+ * @param seq_len 
+ * @param output 
+ */
+void ModelPagedKVCache::gather_layer_key(
+    int64_t layer_idx,
+    const BlockTableManager& table_manager,
+    int64_t table_idx,
+    int64_t start_pos,
+    int64_t seq_len,
+    Tensor& output
+) const {
+    check_layer_idx(layer_idx);
+    check_write_range(start_pos, seq_len);
+    check_gather_output_shape(output, seq_len);
+
+    const LayerPagedKVCache& layer_cache = layer(layer_idx);
+
+    const size_t row_bytes =
+        static_cast<size_t>(num_kv_heads_ * head_dim_) * dtype_size(dtype_);
+
+    for (int64_t token_idx = 0; token_idx < seq_len; ++token_idx) {
+        const int64_t logical_token_index = start_pos + token_idx;
+
+        const int64_t physical_token_index =
+            table_manager.physical_token_index(
+                table_idx,
+                logical_token_index,
+                page_size_
+            );
+
+        const size_t src_offset =
+            static_cast<size_t>(physical_token_index) * row_bytes;
+
+        const size_t dst_offset =
+            static_cast<size_t>(token_idx) * row_bytes;
+
+        output.copy_from_tensor(
+            layer_cache.key_pool,
+            dst_offset,
+            src_offset,
+            row_bytes
+        );
+    }
+}
+
+/**
+ * @brief 就从k pool里面把离散的数据整理成连续的output输出出来
+ * 
+ * @param layer_idx 
+ * @param table_manager 
+ * @param table_idx 
+ * @param start_pos 
+ * @param seq_len 
+ * @param output 
+ */
+void ModelPagedKVCache::gather_layer_value(
+    int64_t layer_idx,
+    const BlockTableManager& table_manager,
+    int64_t table_idx,
+    int64_t start_pos,
+    int64_t seq_len,
+    Tensor& output
+) const {
+    check_layer_idx(layer_idx);
+    check_write_range(start_pos, seq_len);
+    check_gather_output_shape(output, seq_len);
+
+    const LayerPagedKVCache& layer_cache = layer(layer_idx);
+
+    const size_t row_bytes =
+        static_cast<size_t>(num_kv_heads_ * head_dim_) * dtype_size(dtype_);
+
+    for (int64_t token_idx = 0; token_idx < seq_len; ++token_idx) {
+        const int64_t logical_token_index = start_pos + token_idx;
+
+        const int64_t physical_token_index =
+            table_manager.physical_token_index(
+                table_idx,
+                logical_token_index,
+                page_size_
+            );
+
+        const size_t src_offset =
+            static_cast<size_t>(physical_token_index) * row_bytes;
+
+        const size_t dst_offset =
+            static_cast<size_t>(token_idx) * row_bytes;
+
+        output.copy_from_tensor(
+            layer_cache.value_pool,
+            dst_offset,
+            src_offset,
+            row_bytes
+        );
+    }
+}
+
 void ModelPagedKVCache::reset() {
     for (auto& layer_cache : layers_) {
         layer_cache.key_pool.zero_();
@@ -244,6 +348,41 @@ void ModelPagedKVCache::check_write_range(
 
     if (start_pos + seq_len > capacity_) {
         throw std::runtime_error("paged kv cache write range exceeds capacity");
+    }
+}
+
+/**
+ * @brief 检测输出的output是不是和模型指定的一样
+ * 
+ * @param output 
+ * @param seq_len 
+ */
+void ModelPagedKVCache::check_gather_output_shape(
+    const Tensor& output,
+    int64_t seq_len
+) const {
+    if (output.dtype() != dtype_) {
+        throw std::runtime_error("paged kv cache gather output dtype mismatch");
+    }
+
+    if (output.device() != device_) {
+        throw std::runtime_error("paged kv cache gather output device mismatch");
+    }
+
+    if (output.shape().size() != 3) {
+        throw std::runtime_error("paged kv cache gather output expects 3D tensor");
+    }
+
+    if (output.shape()[0] != seq_len) {
+        throw std::runtime_error("paged kv cache gather output seq_len mismatch");
+    }
+
+    if (output.shape()[1] != num_kv_heads_) {
+        throw std::runtime_error("paged kv cache gather output num_kv_heads mismatch");
+    }
+
+    if (output.shape()[2] != head_dim_) {
+        throw std::runtime_error("paged kv cache gather output head_dim mismatch");
     }
 }
 

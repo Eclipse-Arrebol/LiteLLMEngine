@@ -434,6 +434,196 @@ static void test_two_requests_do_not_overlap() {
     }
 }
 
+static void test_gather_after_prefill_update() {
+    constexpr int64_t num_kv_heads = 2;
+    constexpr int64_t head_dim = 2;
+    constexpr int64_t page_size = 2;
+
+    ModelPagedKVCache cache(
+        1,
+        5,
+        page_size,
+        num_kv_heads,
+        head_dim,
+        DType::FP32,
+        Device::CPU
+    );
+
+    BlockTableManager table_manager(cache.num_blocks());
+
+    const int64_t table_idx = table_manager.allocate_table();
+
+    table_manager.ensure_blocks(table_idx, 5, page_size);
+
+    Tensor key(
+        std::vector<int64_t>{5, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CPU
+    );
+
+    Tensor value(
+        std::vector<int64_t>{5, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CPU
+    );
+
+    fill_kv(key, value, 10.0f, 100.0f);
+
+    cache.update_layer(
+        0,
+        table_manager,
+        table_idx,
+        0,
+        key,
+        value
+    );
+
+    Tensor gathered_key(
+        std::vector<int64_t>{5, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CPU
+    );
+
+    Tensor gathered_value(
+        std::vector<int64_t>{5, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CPU
+    );
+
+    cache.gather_layer_key(
+        0,
+        table_manager,
+        table_idx,
+        0,
+        5,
+        gathered_key
+    );
+
+    cache.gather_layer_value(
+        0,
+        table_manager,
+        table_idx,
+        0,
+        5,
+        gathered_value
+    );
+
+    for (int64_t token_idx = 0; token_idx < 5; ++token_idx) {
+        expect_token_equal(
+            key,
+            token_idx,
+            gathered_key,
+            token_idx,
+            num_kv_heads,
+            head_dim
+        );
+
+        expect_token_equal(
+            value,
+            token_idx,
+            gathered_value,
+            token_idx,
+            num_kv_heads,
+            head_dim
+        );
+    }
+}
+static void test_gather_slice() {
+    constexpr int64_t num_kv_heads = 2;
+    constexpr int64_t head_dim = 2;
+    constexpr int64_t page_size = 2;
+
+    ModelPagedKVCache cache(
+        1,
+        5,
+        page_size,
+        num_kv_heads,
+        head_dim,
+        DType::FP32,
+        Device::CPU
+    );
+
+    BlockTableManager table_manager(cache.num_blocks());
+
+    const int64_t table_idx = table_manager.allocate_table();
+
+    table_manager.ensure_blocks(table_idx, 5, page_size);
+
+    Tensor key(
+        std::vector<int64_t>{5, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CPU
+    );
+
+    Tensor value(
+        std::vector<int64_t>{5, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CPU
+    );
+
+    fill_kv(key, value, 10.0f, 100.0f);
+
+    cache.update_layer(
+        0,
+        table_manager,
+        table_idx,
+        0,
+        key,
+        value
+    );
+
+    Tensor gathered_key(
+        std::vector<int64_t>{3, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CPU
+    );
+
+    Tensor gathered_value(
+        std::vector<int64_t>{3, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CPU
+    );
+
+    // gather logical token 2,3,4
+    cache.gather_layer_key(
+        0,
+        table_manager,
+        table_idx,
+        2,
+        3,
+        gathered_key
+    );
+
+    cache.gather_layer_value(
+        0,
+        table_manager,
+        table_idx,
+        2,
+        3,
+        gathered_value
+    );
+
+    for (int64_t i = 0; i < 3; ++i) {
+        expect_token_equal(
+            key,
+            2 + i,
+            gathered_key,
+            i,
+            num_kv_heads,
+            head_dim
+        );
+
+        expect_token_equal(
+            value,
+            2 + i,
+            gathered_value,
+            i,
+            num_kv_heads,
+            head_dim
+        );
+    }
+}
+
 static void test_reset() {
     constexpr int64_t num_kv_heads = 1;
     constexpr int64_t head_dim = 2;
@@ -598,6 +788,8 @@ int main() {
     test_reset();
     test_unallocated_logical_page_should_throw();
     test_invalid_shape_should_throw();
+    test_gather_after_prefill_update();
+    test_gather_slice();
 
     std::cout << "test_paged_kv_cache passed" << std::endl;
     return 0;

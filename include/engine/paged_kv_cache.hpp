@@ -49,6 +49,25 @@ public:
         const Tensor& value
     );
 
+
+    void gather_layer_key(
+        int64_t layer_idx,
+        const BlockTableManager& table_manager,
+        int64_t table_idx,
+        int64_t start_pos,
+        int64_t seq_len,
+        Tensor& output
+    ) const;
+
+    void gather_layer_value(
+        int64_t layer_idx,
+        const BlockTableManager& table_manager,
+        int64_t table_idx,
+        int64_t start_pos,
+        int64_t seq_len,
+        Tensor& output
+    ) const;
+
     void reset();
 
     int64_t capacity() const;
@@ -62,6 +81,10 @@ private:
     void check_layer_idx(int64_t layer_idx) const;
     void check_kv_shape(const Tensor& key, const Tensor& value) const;
     void check_write_range(int64_t start_pos, int64_t seq_len) const;
+    void check_gather_output_shape(
+        const Tensor& output,
+        int64_t seq_len
+    ) const;
 
 private:
     int64_t num_layers_ = 0;
