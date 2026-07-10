@@ -246,3 +246,13 @@ add_test(NAME test_block_table_manager COMMAND test_block_table_manager)
 add_executable(test_request_block_table tests/test_request_block_table.cpp)
 target_link_libraries(test_request_block_table PRIVATE litellm_engine_core)
 add_test(NAME test_request_block_table COMMAND test_request_block_table)
+
+
+add_executable(test_paged_attention tests/test_paged_attention.cpp)
+target_link_libraries(test_paged_attention PRIVATE litellm_engine_core)
+add_test(NAME test_paged_attention COMMAND test_paged_attention)
+
+
+add_executable(test_paged_attention_cuda tests/test_paged_attention_cuda.cpp)
+target_link_libraries(test_paged_attention_cuda PRIVATE litellm_engine_core)
+add_test(NAME test_paged_attention_cuda COMMAND test_paged_attention_cuda)

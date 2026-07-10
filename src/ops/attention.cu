@@ -1,6 +1,8 @@
 #include "ops/attention.hpp"
 
 #include "core/cuda_utils.hpp"
+#include "engine/block_table_manager.hpp"
+#include "engine/paged_kv_cache.hpp"
 
 #include <cuda_runtime.h>
 
@@ -625,6 +627,100 @@ void flash_attention(
 
     throw std::runtime_error("Unsupported device for flash_attention");
 }
+
+/**
+ * @brief page版的attention 其实就是把page中的kv cache拿出来，然后给到原来那个函数进行计算
+ * 
+ * @param q 
+ * @param paged_kv_cache 
+ * @param table_manager 
+ * @param table_idx 
+ * @param layer_idx 
+ * @param kv_seq_len 
+ * @param output 
+ */
+void flash_attention_paged_kv_cache_cuda(
+    const Tensor& q,
+    const ModelPagedKVCache& paged_kv_cache,
+    const BlockTableManager& table_manager,
+    int64_t table_idx,
+    int64_t layer_idx,
+    int64_t kv_seq_len,
+    Tensor& output
+) {
+    if (q.device() != Device::CUDA) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_cuda q must be CUDA tensor"
+        );
+    }
+
+    if (output.device() != Device::CUDA) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_cuda output must be CUDA tensor"
+        );
+    }
+
+    if (kv_seq_len <= 0) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_cuda kv_seq_len must be positive"
+        );
+    }
+
+    Tensor key_contig(
+        std::vector<int64_t>{
+            kv_seq_len,
+            paged_kv_cache.num_kv_heads(),
+            paged_kv_cache.head_dim()
+        },
+        q.dtype(),
+        q.device()
+    );
+
+    Tensor value_contig(
+        std::vector<int64_t>{
+            kv_seq_len,
+            paged_kv_cache.num_kv_heads(),
+            paged_kv_cache.head_dim()
+        },
+        q.dtype(),
+        q.device()
+    );
+
+    paged_kv_cache.gather_layer_key(
+        layer_idx,
+        table_manager,
+        table_idx,
+        0,
+        kv_seq_len,
+        key_contig
+    );
+
+    paged_kv_cache.gather_layer_value(
+        layer_idx,
+        table_manager,
+        table_idx,
+        0,
+        kv_seq_len,
+        value_contig
+    );
+
+    check_flash_attention_kv_cache_args(
+        q,
+        key_contig,
+        value_contig,
+        kv_seq_len,
+        output
+    );
+
+    flash_attention_kv_cache_cuda(
+        q,
+        key_contig,
+        value_contig,
+        kv_seq_len,
+        output
+    );
+}
+
 
 void flash_attention_kv_cache(
     const Tensor& q,

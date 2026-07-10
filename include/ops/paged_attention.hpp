@@ -1,5 +1,4 @@
-// include/ops/attention.hpp
-
+// include/ops/paged_attention.hpp
 #pragma once
 
 #include "core/tensor.hpp"
@@ -10,23 +9,8 @@
 
 namespace lite_llm {
 
-void flash_attention(
-    const Tensor& q,
-    const Tensor& k,
-    const Tensor& v,
-    Tensor& output
-);
-
-void flash_attention_kv_cache(
-    const Tensor& q,
-    const Tensor& key_cache,
-    const Tensor& value_cache,
-    int64_t kv_seq_len,
-    Tensor& output
-);
-
-void flash_attention_paged_kv_cache_cuda(
-    const Tensor& q,
+void paged_attention_decode_cpu(
+    const Tensor& query,
     const ModelPagedKVCache& paged_kv_cache,
     const BlockTableManager& table_manager,
     int64_t table_idx,
