@@ -3,7 +3,11 @@
 #include "ops/copy.hpp"
 #include "ops/attention.hpp"
 #include "ops/add.hpp"
+#include "ops/paged_attention.hpp"
 #include "engine/kv_cache.hpp"
+#include "engine/block_table_manager.hpp"
+#include "engine/paged_kv_cache.hpp"
+
 
 #include <stdexcept>
 #include <string>
@@ -227,24 +231,50 @@ void Qwen3Attention::forward(
     }
 
     if (context.position_ids == nullptr) {
-            throw std::runtime_error("Qwen3Attention ForwardContext.position_ids is null");
+        throw std::runtime_error(
+            "Qwen3Attention ForwardContext.position_ids is null"
+        );
+    }
+
+    if (context.use_paged_kv_cache && !context.use_cache) {
+        throw std::runtime_error(
+            "Qwen3Attention use_paged_kv_cache=true requires use_cache=true"
+        );
+    }
+
+    if (context.use_cache) {
+        if (context.layer_idx < 0) {
+            throw std::runtime_error(
+                "Qwen3Attention use_cache=true but layer_idx is invalid"
+            );
         }
 
-        if (context.use_cache) {
+        if (context.use_paged_kv_cache) {
+            if (context.paged_kv_cache == nullptr) {
+                throw std::runtime_error(
+                    "Qwen3Attention use_paged_kv_cache=true but paged_kv_cache is null"
+                );
+            }
+
+            if (context.block_table_manager == nullptr) {
+                throw std::runtime_error(
+                    "Qwen3Attention use_paged_kv_cache=true but block_table_manager is null"
+                );
+            }
+
+            if (context.table_idx < 0) {
+                throw std::runtime_error(
+                    "Qwen3Attention use_paged_kv_cache=true but table_idx is invalid"
+                );
+            }
+        } else {
             if (context.kv_cache == nullptr) {
                 throw std::runtime_error(
                     "Qwen3Attention use_cache=true but kv_cache is null"
                 );
             }
-
-            if (context.layer_idx < 0) {
-                throw std::runtime_error(
-                    "Qwen3Attention use_cache=true but layer_idx is invalid"
-                );
-            }
         }
-
-    
+    }
 
     const Tensor& position_ids = *context.position_ids;
 
@@ -303,10 +333,13 @@ void Qwen3Attention::forward(
     }
 
     if (position_ids.shape()[0] != num_tokens) {
-        throw std::runtime_error("Qwen3Attention position_ids shape mismatch");
+        throw std::runtime_error(
+            "Qwen3Attention position_ids shape mismatch"
+        );
     }
 
-    if (output.shape()[0] != num_tokens || output.shape()[1] != hidden_size_) {
+    if (output.shape()[0] != num_tokens ||
+        output.shape()[1] != hidden_size_) {
         throw std::runtime_error("Qwen3Attention output shape mismatch");
     }
 
@@ -322,9 +355,23 @@ void Qwen3Attention::forward(
     const int64_t q_size = num_attention_heads_ * head_dim_;
     const int64_t kv_size = num_key_value_heads_ * head_dim_;
 
-    Tensor q_flat({num_tokens, q_size}, DType::FP32, device);
-    Tensor k_flat({num_tokens, kv_size}, DType::FP32, device);
-    Tensor v_flat({num_tokens, kv_size}, DType::FP32, device);
+    Tensor q_flat(
+        {num_tokens, q_size},
+        DType::FP32,
+        device
+    );
+
+    Tensor k_flat(
+        {num_tokens, kv_size},
+        DType::FP32,
+        device
+    );
+
+    Tensor v_flat(
+        {num_tokens, kv_size},
+        DType::FP32,
+        device
+    );
 
     q_proj_.forward(hidden_states, q_flat);
     k_proj_.forward(hidden_states, k_flat);
@@ -394,14 +441,44 @@ void Qwen3Attention::forward(
         device
     );
 
-    rotary_.apply(q_3d, k_3d, position_ids, q_rot, k_rot);
+    rotary_.apply(
+        q_3d,
+        k_3d,
+        position_ids,
+        q_rot,
+        k_rot
+    );
 
+    /*
+     * Cache write:
+     *
+     * prefill:
+     *   past_len = 0
+     *   num_tokens = prompt_len
+     *   write logical token [0, prompt_len)
+     *
+     * decode:
+     *   past_len = cached token count
+     *   num_tokens = 1
+     *   write logical token past_len
+     */
     if (context.use_cache) {
-        context.kv_cache->update_layer(
-            context.layer_idx,
-            k_rot,
-            v_3d
-        );
+        if (context.use_paged_kv_cache) {
+            context.paged_kv_cache->update_layer(
+                context.layer_idx,
+                *context.block_table_manager,
+                context.table_idx,
+                context.past_len,
+                k_rot,
+                v_3d
+            );
+        } else {
+            context.kv_cache->update_layer(
+                context.layer_idx,
+                k_rot,
+                v_3d
+            );
+        }
     }
 
     Tensor attn_out_3d(
@@ -410,45 +487,74 @@ void Qwen3Attention::forward(
         device
     );
 
-
     /*
-    ######################################################################
-    prefill:
-    use_cache=true, past_len=0, seq_len=N
-    写入当前 K/V 到 cache
-    仍然用 flash_attention(q_rot, k_rot, v_3d)
-
-    decode:
-    use_cache=true, past_len=N, seq_len=1
-    写入当前 token K/V 到 cache[N]
-    用 flash_attention_kv_cache(q_rot, cache.key, cache.value, N+1)
-    ######################################################################
-    */
-
+     * Attention:
+     *
+     * prefill:
+     *   use current q/k/v directly.
+     *
+     * decode:
+     *   use q_rot + cached K/V.
+     */
     if (context.use_cache && context.past_len > 0) {
         static int printed = 0;
         if (printed < 10) {
             std::cerr << "[attention] use kv cache decode"
-                    << ", layer_idx=" << context.layer_idx
-                    << ", past_len=" << context.past_len
-                    << ", num_tokens=" << num_tokens
-                    << std::endl;
+                      << ", layer_idx=" << context.layer_idx
+                      << ", past_len=" << context.past_len
+                      << ", num_tokens=" << num_tokens
+                      << ", paged=" << context.use_paged_kv_cache
+                      << std::endl;
             ++printed;
         }
-        const LayerKVCache& layer_cache =
-            context.kv_cache->layer(context.layer_idx);
 
         const int64_t kv_seq_len = context.past_len + num_tokens;
 
-        flash_attention_kv_cache(
+        if (context.use_paged_kv_cache) {
+            if (device == Device::CUDA) {
+                flash_attention_paged_kv_cache_cuda(
+                    q_rot,
+                    *context.paged_kv_cache,
+                    *context.block_table_manager,
+                    context.table_idx,
+                    context.layer_idx,
+                    kv_seq_len,
+                    attn_out_3d
+                );
+            } else if (device == Device::CPU) {
+                paged_attention_decode_cpu(
+                    q_rot,
+                    *context.paged_kv_cache,
+                    *context.block_table_manager,
+                    context.table_idx,
+                    context.layer_idx,
+                    kv_seq_len,
+                    attn_out_3d
+                );
+            } else {
+                throw std::runtime_error(
+                    "Qwen3Attention unsupported device for paged kv cache decode"
+                );
+            }
+        } else {
+            const LayerKVCache& layer_cache =
+                context.kv_cache->layer(context.layer_idx);
+
+            flash_attention_kv_cache(
+                q_rot,
+                layer_cache.key,
+                layer_cache.value,
+                kv_seq_len,
+                attn_out_3d
+            );
+        }
+    } else {
+        flash_attention(
             q_rot,
-            layer_cache.key,
-            layer_cache.value,
-            kv_seq_len,
+            k_rot,
+            v_3d,
             attn_out_3d
         );
-    } else {
-        flash_attention(q_rot, k_rot, v_3d, attn_out_3d);
     }
 
     Tensor attn_out_flat(
