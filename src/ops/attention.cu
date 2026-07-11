@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace lite_llm {
 
@@ -532,6 +534,140 @@ __global__ void flash_attention_kv_cache_kernel(
     }
 }
 
+__global__ void flash_attention_paged_kv_cache_batch_kernel(
+    const float* q,
+    const float* key_pool,
+    const float* value_pool,
+    const int32_t* block_tables,
+    const int32_t* kv_seq_lens,
+    float* output,
+    int64_t batch_size,
+    int64_t max_blocks_per_request,
+    int64_t page_size,
+    int64_t num_q_heads,
+    int64_t num_kv_heads,
+    int64_t head_dim
+) {
+    extern __shared__ float shared[];
+
+    float* reduce = shared;
+    float* acc = shared + blockDim.x;
+
+    __shared__ float m_shared;
+    __shared__ float l_shared;
+    __shared__ float alpha_shared;
+    __shared__ float beta_shared;
+
+    const int64_t row = static_cast<int64_t>(blockIdx.x);
+    const int64_t batch_idx = row / num_q_heads;
+    const int64_t q_head = row % num_q_heads;
+    const int tid = threadIdx.x;
+
+    if (batch_idx >= batch_size) {
+        return;
+    }
+
+    const int64_t kv_seq_len =
+        static_cast<int64_t>(kv_seq_lens[batch_idx]);
+
+    if (kv_seq_len <= 0) {
+        return;
+    }
+
+    const int64_t group_size = num_q_heads / num_kv_heads;
+    const int64_t kv_head = q_head / group_size;
+
+    const float scale = rsqrtf(static_cast<float>(head_dim));
+
+    if (tid == 0) {
+        m_shared = -FLT_MAX;
+        l_shared = 0.0f;
+    }
+
+    for (int64_t d = tid; d < head_dim; d += blockDim.x) {
+        acc[d] = 0.0f;
+    }
+
+    __syncthreads();
+
+    for (int64_t key_token = 0; key_token < kv_seq_len; ++key_token) {
+        const int64_t logical_block = key_token / page_size;
+        const int64_t page_offset = key_token % page_size;
+
+        const int32_t physical_block =
+            block_tables[
+                batch_idx * max_blocks_per_request +
+                logical_block
+            ];
+
+        const int64_t physical_token =
+            static_cast<int64_t>(physical_block) * page_size +
+            page_offset;
+
+        float local_dot = 0.0f;
+
+        for (int64_t d = tid; d < head_dim; d += blockDim.x) {
+            const int64_t q_idx =
+                (batch_idx * num_q_heads + q_head) * head_dim + d;
+
+            const int64_t k_idx =
+                (physical_token * num_kv_heads + kv_head) * head_dim + d;
+
+            local_dot += q[q_idx] * key_pool[k_idx];
+        }
+
+        reduce[tid] = local_dot;
+        __syncthreads();
+
+        for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                reduce[tid] += reduce[tid + stride];
+            }
+            __syncthreads();
+        }
+
+        if (tid == 0) {
+            const float score = reduce[0] * scale;
+
+            const float old_m = m_shared;
+            const float old_l = l_shared;
+
+            const float new_m = fmaxf(old_m, score);
+            const float alpha =
+                (old_l == 0.0f) ? 0.0f : expf(old_m - new_m);
+            const float beta = expf(score - new_m);
+            const float new_l = old_l * alpha + beta;
+
+            m_shared = new_m;
+            l_shared = new_l;
+            alpha_shared = alpha;
+            beta_shared = beta;
+        }
+
+        __syncthreads();
+
+        for (int64_t d = tid; d < head_dim; d += blockDim.x) {
+            const int64_t v_idx =
+                (physical_token * num_kv_heads + kv_head) * head_dim + d;
+
+            acc[d] =
+                acc[d] * alpha_shared +
+                value_pool[v_idx] * beta_shared;
+        }
+
+        __syncthreads();
+    }
+
+    const float inv_l = 1.0f / l_shared;
+
+    for (int64_t d = tid; d < head_dim; d += blockDim.x) {
+        const int64_t out_idx =
+            (batch_idx * num_q_heads + q_head) * head_dim + d;
+
+        output[out_idx] = acc[d] * inv_l;
+    }
+}
+
 void flash_attention_cuda(
     const Tensor& q,
     const Tensor& k,
@@ -719,6 +855,201 @@ void flash_attention_paged_kv_cache_cuda(
         kv_seq_len,
         output
     );
+}
+
+void flash_attention_paged_kv_cache_batch_cuda(
+    const Tensor& q,
+    const ModelPagedKVCache& paged_kv_cache,
+    const BlockTableManager& table_manager,
+    const std::vector<int64_t>& table_indices,
+    int64_t layer_idx,
+    const std::vector<int64_t>& kv_seq_lens,
+    Tensor& output
+) {
+    if (q.device() != Device::CUDA) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_batch_cuda q must be CUDA tensor"
+        );
+    }
+
+    if (output.device() != Device::CUDA) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_batch_cuda output must be CUDA tensor"
+        );
+    }
+
+    if (q.dtype() != DType::FP32 || output.dtype() != DType::FP32) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_batch_cuda tensors must be FP32"
+        );
+    }
+
+    if (q.shape().size() != 3) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_batch_cuda q must be 3D"
+        );
+    }
+
+    if (output.shape() != q.shape()) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_batch_cuda output shape mismatch"
+        );
+    }
+
+    const int64_t batch_size = q.shape()[0];
+    const int64_t num_q_heads = q.shape()[1];
+    const int64_t head_dim = q.shape()[2];
+
+    const int64_t num_kv_heads = paged_kv_cache.num_kv_heads();
+    const int64_t page_size = paged_kv_cache.page_size();
+
+    if (batch_size <= 0 || num_q_heads <= 0 ||
+        num_kv_heads <= 0 || head_dim <= 0) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_batch_cuda invalid shape"
+        );
+    }
+
+    if (head_dim != paged_kv_cache.head_dim()) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_batch_cuda head_dim mismatch"
+        );
+    }
+
+    if (num_q_heads % num_kv_heads != 0) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_batch_cuda invalid head grouping"
+        );
+    }
+
+    if (table_indices.size() != static_cast<size_t>(batch_size) ||
+        kv_seq_lens.size() != static_cast<size_t>(batch_size)) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_batch_cuda metadata size mismatch"
+        );
+    }
+
+    int64_t max_blocks_per_request = 0;
+
+    for (int64_t row = 0; row < batch_size; ++row) {
+        const int64_t kv_seq_len =
+            kv_seq_lens[static_cast<size_t>(row)];
+
+        if (kv_seq_len <= 0 ||
+            kv_seq_len > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+            throw std::runtime_error(
+                "flash_attention_paged_kv_cache_batch_cuda kv_seq_len out of range"
+            );
+        }
+
+        const int64_t required_blocks =
+            (kv_seq_len + page_size - 1) / page_size;
+
+        max_blocks_per_request =
+            std::max(max_blocks_per_request, required_blocks);
+    }
+
+    if (max_blocks_per_request <= 0 ||
+        max_blocks_per_request > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+        throw std::runtime_error(
+            "flash_attention_paged_kv_cache_batch_cuda invalid block table width"
+        );
+    }
+
+    std::vector<int32_t> dense_block_tables(
+        static_cast<size_t>(batch_size * max_blocks_per_request),
+        -1
+    );
+
+    std::vector<int32_t> kv_seq_lens_i32(
+        static_cast<size_t>(batch_size),
+        0
+    );
+
+    for (int64_t row = 0; row < batch_size; ++row) {
+        const int64_t table_idx =
+            table_indices[static_cast<size_t>(row)];
+
+        const int64_t kv_seq_len =
+            kv_seq_lens[static_cast<size_t>(row)];
+
+        const int64_t required_blocks =
+            (kv_seq_len + page_size - 1) / page_size;
+
+        const std::vector<int32_t>& block_table =
+            table_manager.table(table_idx);
+
+        if (required_blocks > static_cast<int64_t>(block_table.size())) {
+            throw std::runtime_error(
+                "flash_attention_paged_kv_cache_batch_cuda block table too short"
+            );
+        }
+
+        kv_seq_lens_i32[static_cast<size_t>(row)] =
+            static_cast<int32_t>(kv_seq_len);
+
+        for (int64_t block = 0; block < required_blocks; ++block) {
+            dense_block_tables[
+                static_cast<size_t>(
+                    row * max_blocks_per_request + block
+                )
+            ] = block_table[static_cast<size_t>(block)];
+        }
+    }
+
+    Tensor block_tables_tensor(
+        {batch_size, max_blocks_per_request},
+        DType::INT32,
+        Device::CUDA
+    );
+
+    Tensor kv_seq_lens_tensor(
+        {batch_size},
+        DType::INT32,
+        Device::CUDA
+    );
+
+    block_tables_tensor.copy_from_cpu(
+        dense_block_tables.data(),
+        dense_block_tables.size() * sizeof(int32_t)
+    );
+
+    kv_seq_lens_tensor.copy_from_cpu(
+        kv_seq_lens_i32.data(),
+        kv_seq_lens_i32.size() * sizeof(int32_t)
+    );
+
+    const LayerPagedKVCache& layer_cache =
+        paged_kv_cache.layer(layer_idx);
+
+    constexpr int block_size = 256;
+
+    dim3 block(block_size);
+    dim3 grid(static_cast<unsigned int>(batch_size * num_q_heads));
+
+    const size_t shared_bytes =
+        static_cast<size_t>(block_size + head_dim) * sizeof(float);
+
+    flash_attention_paged_kv_cache_batch_kernel<<<
+        grid,
+        block,
+        shared_bytes
+    >>>(
+        q.ptr<float>(),
+        layer_cache.key_pool.ptr<float>(),
+        layer_cache.value_pool.ptr<float>(),
+        block_tables_tensor.ptr<int32_t>(),
+        kv_seq_lens_tensor.ptr<int32_t>(),
+        output.ptr<float>(),
+        batch_size,
+        max_blocks_per_request,
+        page_size,
+        num_q_heads,
+        num_kv_heads,
+        head_dim
+    );
+
+    CUDA_KERNEL_CHECK();
 }
 
 

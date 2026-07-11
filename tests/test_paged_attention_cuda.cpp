@@ -542,6 +542,207 @@ static void test_paged_cuda_prefill_then_decode_write() {
     expect_vector_close(out_contig_cpu, out_paged_cpu);
 }
 
+static void test_paged_cuda_batch_matches_single_cuda() {
+    constexpr int64_t num_layers = 1;
+    constexpr int64_t capacity = 16;
+    constexpr int64_t page_size = 3;
+    constexpr int64_t batch_size = 2;
+    constexpr int64_t num_q_heads = 4;
+    constexpr int64_t num_kv_heads = 2;
+    constexpr int64_t head_dim = 4;
+    constexpr int64_t kv_seq_len0 = 5;
+    constexpr int64_t kv_seq_len1 = 8;
+
+    ModelPagedKVCache paged_cache(
+        num_layers,
+        capacity,
+        page_size,
+        num_kv_heads,
+        head_dim,
+        DType::FP32,
+        Device::CUDA
+    );
+
+    BlockTableManager table_manager(paged_cache.num_blocks());
+
+    const int64_t table_idx0 = table_manager.allocate_table();
+    const int64_t table_idx1 = table_manager.allocate_table();
+
+    table_manager.ensure_blocks(table_idx0, kv_seq_len0, page_size);
+    table_manager.ensure_blocks(table_idx1, kv_seq_len1, page_size);
+
+    Tensor query_batch(
+        std::vector<int64_t>{batch_size, num_q_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    Tensor query0(
+        std::vector<int64_t>{1, num_q_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    Tensor query1(
+        std::vector<int64_t>{1, num_q_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    Tensor key0(
+        std::vector<int64_t>{kv_seq_len0, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    Tensor value0(
+        std::vector<int64_t>{kv_seq_len0, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    Tensor key1(
+        std::vector<int64_t>{kv_seq_len1, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    Tensor value1(
+        std::vector<int64_t>{kv_seq_len1, num_kv_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    Tensor out_batch(
+        std::vector<int64_t>{batch_size, num_q_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    Tensor out0(
+        std::vector<int64_t>{1, num_q_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    Tensor out1(
+        std::vector<int64_t>{1, num_q_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    Tensor out_expected(
+        std::vector<int64_t>{batch_size, num_q_heads, head_dim},
+        DType::FP32,
+        Device::CUDA
+    );
+
+    std::vector<float> query_cpu(query_batch.numel());
+    std::vector<float> key0_cpu(key0.numel());
+    std::vector<float> value0_cpu(value0.numel());
+    std::vector<float> key1_cpu(key1.numel());
+    std::vector<float> value1_cpu(value1.numel());
+
+    fill_cpu_vector(query_cpu, 0.25f);
+    fill_cpu_vector(key0_cpu, 0.1f);
+    fill_cpu_vector(value0_cpu, 1.0f);
+    fill_cpu_vector(key1_cpu, 0.7f);
+    fill_cpu_vector(value1_cpu, 2.0f);
+
+    copy_vector_to_tensor(query_cpu, query_batch);
+    copy_vector_to_tensor(key0_cpu, key0);
+    copy_vector_to_tensor(value0_cpu, value0);
+    copy_vector_to_tensor(key1_cpu, key1);
+    copy_vector_to_tensor(value1_cpu, value1);
+
+    const size_t query_row_bytes =
+        static_cast<size_t>(num_q_heads * head_dim) * sizeof(float);
+
+    query0.copy_from_tensor(
+        query_batch,
+        0,
+        0,
+        query_row_bytes
+    );
+
+    query1.copy_from_tensor(
+        query_batch,
+        0,
+        query_row_bytes,
+        query_row_bytes
+    );
+
+    paged_cache.update_layer(
+        0,
+        table_manager,
+        table_idx0,
+        0,
+        key0,
+        value0
+    );
+
+    paged_cache.update_layer(
+        0,
+        table_manager,
+        table_idx1,
+        0,
+        key1,
+        value1
+    );
+
+    flash_attention_paged_kv_cache_cuda(
+        query0,
+        paged_cache,
+        table_manager,
+        table_idx0,
+        0,
+        kv_seq_len0,
+        out0
+    );
+
+    flash_attention_paged_kv_cache_cuda(
+        query1,
+        paged_cache,
+        table_manager,
+        table_idx1,
+        0,
+        kv_seq_len1,
+        out1
+    );
+
+    flash_attention_paged_kv_cache_batch_cuda(
+        query_batch,
+        paged_cache,
+        table_manager,
+        std::vector<int64_t>{table_idx0, table_idx1},
+        0,
+        std::vector<int64_t>{kv_seq_len0, kv_seq_len1},
+        out_batch
+    );
+
+    out_expected.copy_from_tensor(
+        out0,
+        0,
+        0,
+        query_row_bytes
+    );
+
+    out_expected.copy_from_tensor(
+        out1,
+        query_row_bytes,
+        0,
+        query_row_bytes
+    );
+
+    const std::vector<float> out_batch_cpu =
+        copy_tensor_to_vector(out_batch);
+
+    const std::vector<float> out_expected_cpu =
+        copy_tensor_to_vector(out_expected);
+
+    expect_vector_close(out_batch_cpu, out_expected_cpu);
+}
+
 static void test_unallocated_page_should_throw() {
     constexpr int64_t num_layers = 1;
     constexpr int64_t capacity = 4;
@@ -668,6 +869,7 @@ int main() {
     test_paged_cuda_gqa_matches_contiguous_cuda();
     test_paged_cuda_cross_page_matches_contiguous_cuda();
     test_paged_cuda_prefill_then_decode_write();
+    test_paged_cuda_batch_matches_single_cuda();
     test_unallocated_page_should_throw();
     test_invalid_kv_seq_len_should_throw();
 

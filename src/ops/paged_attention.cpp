@@ -273,6 +273,19 @@ void paged_attention_decode_batch_gather(
     const size_t row_bytes =
         static_cast<size_t>(num_q_heads * head_dim) * sizeof(float);
 
+    if (query.device() == Device::CUDA) {
+        flash_attention_paged_kv_cache_batch_cuda(
+            query,
+            paged_kv_cache,
+            table_manager,
+            table_indices,
+            layer_idx,
+            kv_seq_lens,
+            output
+        );
+        return;
+    }
+
     for (int64_t row = 0; row < batch_size; ++row) {
         const int64_t table_idx =
             table_indices[static_cast<size_t>(row)];
@@ -313,16 +326,6 @@ void paged_attention_decode_batch_gather(
 
         if (query.device() == Device::CPU) {
             paged_attention_decode_cpu(
-                query_row,
-                paged_kv_cache,
-                table_manager,
-                table_idx,
-                layer_idx,
-                kv_seq_len,
-                output_row
-            );
-        } else if (query.device() == Device::CUDA) {
-            flash_attention_paged_kv_cache_cuda(
                 query_row,
                 paged_kv_cache,
                 table_manager,
