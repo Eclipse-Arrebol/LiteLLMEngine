@@ -4,6 +4,8 @@
 #include "ops/argmax.hpp"
 #include "engine/kv_cache.hpp"
 #include "core/tensor_memory_tracker.hpp"
+#include "engine/paged_kv_cache_manager.hpp"
+#include "engine/request_manager.hpp"
 
 #include <stdexcept>
 #include <vector>
@@ -362,6 +364,286 @@ std::vector<int32_t> generate_greedy_with_kv_cache(
     }
 
     return generated;
+}
+
+
+std::vector<int32_t> generate_greedy_with_paged_kv_cache(
+    const Qwen3ForCausalLM& model,
+    const std::vector<int32_t>& input_ids,
+    const GreedyGenerateOptions& options
+) {
+    if (!model.initialized()) {
+        throw std::runtime_error(
+            "generate_greedy_with_paged_kv_cache model is not initialized"
+        );
+    }
+
+    if (input_ids.empty()) {
+        throw std::runtime_error(
+            "generate_greedy_with_paged_kv_cache input_ids must not be empty"
+        );
+    }
+
+    if (options.max_new_tokens < 0) {
+        throw std::runtime_error(
+            "generate_greedy_with_paged_kv_cache max_new_tokens must be non-negative"
+        );
+    }
+
+    const ModelConfig& config = model.config();
+
+    if (config.vocab_size <= 0) {
+        throw std::runtime_error(
+            "generate_greedy_with_paged_kv_cache vocab_size must be positive"
+        );
+    }
+
+    if (options.max_new_tokens == 0) {
+        return input_ids;
+    }
+
+    const int64_t initial_capacity =
+        static_cast<int64_t>(input_ids.size()) + options.max_new_tokens;
+
+    constexpr int64_t page_size = 16;
+
+    RequestManager request_manager;
+
+    const int64_t request_id = request_manager.add_request(
+        input_ids,
+        options.max_new_tokens,
+        options.eos_token_id
+    );
+
+    PagedKVCacheManager paged_kv_manager(
+        config,
+        options.device,
+        DType::FP32,
+        initial_capacity,
+        page_size
+    );
+
+    GenerationRequest& req = request_manager.request(request_id);
+
+    // -------------------------
+    // 1. prefill
+    // -------------------------
+    {
+        const int64_t seq_len = req.extend_len();
+
+        if (seq_len != static_cast<int64_t>(input_ids.size())) {
+            throw std::runtime_error(
+                "generate_greedy_with_paged_kv_cache invalid prefill extend_len"
+            );
+        }
+
+        paged_kv_manager.ensure_device_blocks(req);
+
+        std::vector<int32_t> position_ids_cpu =
+            make_position_ids(seq_len);
+
+        Tensor input_ids_tensor = make_int32_tensor(
+            req.input_ids,
+            options.device
+        );
+
+        Tensor position_ids_tensor = make_int32_tensor(
+            position_ids_cpu,
+            options.device
+        );
+
+        Tensor logits(
+            {seq_len, config.vocab_size},
+            DType::FP32,
+            options.device
+        );
+
+        ForwardContext context;
+
+        paged_kv_manager.fill_forward_context(
+            context,
+            req,
+            &position_ids_tensor,
+            seq_len
+        );
+
+        const TensorMemorySnapshot mem_before_prefill =
+            tensor_memory_snapshot();
+
+        model.forward(
+            input_ids_tensor,
+            context,
+            logits
+        );
+
+        const TensorMemorySnapshot mem_after_prefill =
+            tensor_memory_snapshot();
+
+        if (options.verbose) {
+            print_tensor_memory_delta(
+                "generate_paged_kv prefill forward",
+                mem_before_prefill,
+                mem_after_prefill
+            );
+        }
+
+        request_manager.mark_forward_done(request_id);
+
+        if (req.cached_len != req.device_len()) {
+            throw std::runtime_error(
+                "generate_greedy_with_paged_kv_cache prefill did not mark forward done"
+            );
+        }
+
+        const int32_t next_token_id =
+            argmax_last_token(logits);
+
+        if (options.verbose) {
+            std::cerr << "[generate_paged_kv] prefill"
+                      << ", seq_len=" << seq_len
+                      << ", next_token_id=" << next_token_id
+                      << std::endl;
+        }
+
+        if (options.eos_token_id >= 0 &&
+            next_token_id == options.eos_token_id) {
+            if (options.verbose) {
+                std::cerr << "[generate_paged_kv] hit eos_token_id="
+                          << next_token_id
+                          << std::endl;
+            }
+
+            request_manager.finish_request(request_id);
+            paged_kv_manager.release(req);
+
+            return req.input_ids;
+        }
+
+        request_manager.append_token(
+            request_id,
+            next_token_id
+        );
+    }
+
+    // -------------------------
+    // 2. decode
+    // -------------------------
+    for (int64_t step = 1; step < options.max_new_tokens; ++step) {
+        GenerationRequest& decode_req =
+            request_manager.request(request_id);
+
+        if (decode_req.status == RequestStatus::Finished) {
+            break;
+        }
+
+        const int64_t past_len = decode_req.cached_len;
+        const int64_t seq_len = decode_req.extend_len();
+
+        if (seq_len != 1) {
+            throw std::runtime_error(
+                "generate_greedy_with_paged_kv_cache decode expects extend_len=1"
+            );
+        }
+
+        const int32_t last_token_id =
+            decode_req.input_ids.back();
+
+        paged_kv_manager.ensure_device_blocks(decode_req);
+
+        Tensor input_ids_tensor = make_int32_tensor(
+            std::vector<int32_t>{last_token_id},
+            options.device
+        );
+
+        Tensor position_ids_tensor = make_int32_tensor(
+            std::vector<int32_t>{static_cast<int32_t>(past_len)},
+            options.device
+        );
+
+        Tensor logits(
+            {1, config.vocab_size},
+            DType::FP32,
+            options.device
+        );
+
+        ForwardContext context;
+
+        paged_kv_manager.fill_forward_context(
+            context,
+            decode_req,
+            &position_ids_tensor,
+            1
+        );
+
+        const TensorMemorySnapshot mem_before_decode =
+            tensor_memory_snapshot();
+
+        model.forward(
+            input_ids_tensor,
+            context,
+            logits
+        );
+
+        const TensorMemorySnapshot mem_after_decode =
+            tensor_memory_snapshot();
+
+        if (options.verbose) {
+            print_tensor_memory_delta(
+                "generate_paged_kv decode forward",
+                mem_before_decode,
+                mem_after_decode
+            );
+        }
+
+        request_manager.mark_forward_done(request_id);
+
+        if (decode_req.cached_len != past_len + 1) {
+            throw std::runtime_error(
+                "generate_greedy_with_paged_kv_cache decode did not mark forward done"
+            );
+        }
+
+        const int32_t next_token_id =
+            argmax_last_token(logits);
+
+        if (options.verbose) {
+            std::cerr << "[generate_paged_kv] step "
+                      << (step + 1)
+                      << "/"
+                      << options.max_new_tokens
+                      << ", past_len="
+                      << past_len
+                      << ", next_token_id="
+                      << next_token_id
+                      << std::endl;
+        }
+
+        if (options.eos_token_id >= 0 &&
+            next_token_id == options.eos_token_id) {
+            if (options.verbose) {
+                std::cerr << "[generate_paged_kv] hit eos_token_id="
+                          << next_token_id
+                          << std::endl;
+            }
+
+            request_manager.finish_request(request_id);
+            break;
+        }
+
+        request_manager.append_token(
+            request_id,
+            next_token_id
+        );
+    }
+
+    std::vector<int32_t> output =
+        request_manager.request(request_id).input_ids;
+
+    paged_kv_manager.release(
+        request_manager.request(request_id)
+    );
+
+    return output;
 }
 
 }  // namespace lite_llm

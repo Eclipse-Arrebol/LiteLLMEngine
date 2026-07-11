@@ -60,30 +60,35 @@ ModelPagedKVCache::ModelPagedKVCache(
     int64_t head_dim,
     DType dtype,
     Device device
-)
-    : num_layers_(num_layers),
-      capacity_(capacity),
-      page_size_(page_size),
-      num_blocks_(ceil_div(capacity, page_size)),
-      num_kv_heads_(num_kv_heads),
-      head_dim_(head_dim),
-      dtype_(dtype),
-      device_(device) {
+) {
     if (num_layers <= 0) {
         throw std::runtime_error("num_layers must be positive");
     }
+
     if (capacity <= 0) {
         throw std::runtime_error("capacity must be positive");
     }
+
     if (page_size <= 0) {
         throw std::runtime_error("page_size must be positive");
     }
+
     if (num_kv_heads <= 0) {
         throw std::runtime_error("num_kv_heads must be positive");
     }
+
     if (head_dim <= 0) {
         throw std::runtime_error("head_dim must be positive");
     }
+
+    num_layers_ = num_layers;
+    capacity_ = capacity;
+    page_size_ = page_size;
+    num_blocks_ = ceil_div(capacity_, page_size_);
+    num_kv_heads_ = num_kv_heads;
+    head_dim_ = head_dim;
+    dtype_ = dtype;
+    device_ = device;
 
     layers_.reserve(static_cast<size_t>(num_layers_));
 

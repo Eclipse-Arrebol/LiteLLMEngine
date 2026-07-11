@@ -5,7 +5,6 @@
 #include "ops/add.hpp"
 #include "ops/paged_attention.hpp"
 #include "engine/kv_cache.hpp"
-#include "engine/block_table_manager.hpp"
 #include "engine/paged_kv_cache.hpp"
 
 
@@ -767,7 +766,43 @@ void Qwen3Model::forward(
     }
 
     if (context.position_ids == nullptr) {
-        throw std::runtime_error("Qwen3Model ForwardContext.position_ids is null");
+        throw std::runtime_error(
+            "Qwen3Model ForwardContext.position_ids is null"
+        );
+    }
+
+    if (context.use_paged_kv_cache && !context.use_cache) {
+        throw std::runtime_error(
+            "Qwen3Model use_paged_kv_cache=true requires use_cache=true"
+        );
+    }
+
+    if (context.use_cache) {
+        if (context.use_paged_kv_cache) {
+            if (context.paged_kv_cache == nullptr) {
+                throw std::runtime_error(
+                    "Qwen3Model use_paged_kv_cache=true but paged_kv_cache is null"
+                );
+            }
+
+            if (context.block_table_manager == nullptr) {
+                throw std::runtime_error(
+                    "Qwen3Model use_paged_kv_cache=true but block_table_manager is null"
+                );
+            }
+
+            if (context.table_idx < 0) {
+                throw std::runtime_error(
+                    "Qwen3Model use_paged_kv_cache=true but table_idx is invalid"
+                );
+            }
+        } else {
+            if (context.kv_cache == nullptr) {
+                throw std::runtime_error(
+                    "Qwen3Model use_cache=true but kv_cache is null"
+                );
+            }
+        }
     }
 
     if (input_ids.dtype() != DType::INT32) {
@@ -779,7 +814,9 @@ void Qwen3Model::forward(
     }
 
     if (input_ids.shape().size() != 1) {
-        throw std::runtime_error("Qwen3Model input_ids must be 1D: [num_tokens]");
+        throw std::runtime_error(
+            "Qwen3Model input_ids must be 1D: [num_tokens]"
+        );
     }
 
     if (hidden_states.shape().size() != 2) {
@@ -795,7 +832,9 @@ void Qwen3Model::forward(
     }
 
     if (position_ids.shape().size() != 1) {
-        throw std::runtime_error("Qwen3Model position_ids must be 1D: [num_tokens]");
+        throw std::runtime_error(
+            "Qwen3Model position_ids must be 1D: [num_tokens]"
+        );
     }
 
     const int64_t num_tokens = input_ids.shape()[0];
@@ -806,12 +845,16 @@ void Qwen3Model::forward(
     }
 
     if (position_ids.shape()[0] != num_tokens) {
-        throw std::runtime_error("Qwen3Model position_ids shape mismatch");
+        throw std::runtime_error(
+            "Qwen3Model position_ids shape mismatch"
+        );
     }
 
     if (hidden_states.shape()[0] != num_tokens ||
         hidden_states.shape()[1] != hidden_size) {
-        throw std::runtime_error("Qwen3Model hidden_states shape mismatch");
+        throw std::runtime_error(
+            "Qwen3Model hidden_states shape mismatch"
+        );
     }
 
     if (input_ids.device() != position_ids.device() ||
@@ -841,7 +884,14 @@ void Qwen3Model::forward(
     Tensor* next = &hidden_b;
 
     for (size_t i = 0; i < layers_.size(); ++i) {
-        layers_[i].forward(*current, context, *next);
+        ForwardContext layer_context = context;
+        layer_context.layer_idx = static_cast<int64_t>(i);
+
+        layers_[i].forward(
+            *current,
+            layer_context,
+            *next
+        );
 
         if (current == &hidden_a) {
             current = &hidden_b;
@@ -851,14 +901,17 @@ void Qwen3Model::forward(
             next = &hidden_b;
         }
     }
-    if (context.use_cache) {
-        if (context.kv_cache == nullptr) {
-            throw std::runtime_error(
-                "Qwen3Model use_cache=true but kv_cache is null"
-            );
-        }
 
-        context.kv_cache->advance(context.seq_len);
+    /*
+     * 普通 KVCache:
+     *   Qwen3Model::forward 内部 advance。
+     *
+     * PagedKVCache:
+     *   外层 PagedKVCacheSession::advance 管理 current_len。
+     *   这里不能 advance。
+     */
+    if (context.use_cache && !context.use_paged_kv_cache) {
+        context.kv_cache->advance(num_tokens);
     }
 
     norm_.forward(*current, hidden_states);
