@@ -332,24 +332,57 @@ ctest --test-dir build --output-on-failure
 | 3 | Baseline, 32 new tokens | 10.12 tok/s | Full-sequence forward every decoding step | 1.00x |
 | 3 | Baseline, 128 new tokens | 7.66 tok/s | Full-sequence forward; cost grows with sequence length | 1.00x |
 | 4 | KV cache, 128 new tokens | 14.03 tok/s | Reuse past key/value states during decode | 1.83x |
+| 5 | Paged KV cache batch decode wrapper, 32 requests x 64 new tokens | 44.60 tok/s | Batch active requests; attention still gathers per request | 5.82x vs 128-token baseline |
+| 6 | Paged KV cache batch decode kernel, 32 requests x 64 new tokens | 189.06 tok/s | CUDA paged attention batch kernel reads KV pages directly | 24.68x vs 128-token baseline |
 
-Current KV cache implementation is functionally correct. Further speedups require reducing temporary Tensor allocation, improving single-token CUDA kernels, and adding batching.
+Current paged batch decode path is functionally correct and uses a CUDA paged attention batch kernel. On Qwen3-0.6B with 32 requests x 64 new tokens, the gather-wrapper batch decode path measured 44.60 tok/s, while the direct CUDA paged attention batch kernel measured 189.06 tok/s. Further speedups should focus on keeping block tables on GPU, reducing per-step temporary Tensor allocation, and improving decode-time projection/norm overhead.
 
-Benchmark command:
+Baseline KV cache benchmark command:
 
 ```bash
 ./build/LiteLLMEngine \
   --model /root/rivermind-data/Qwen_Qwen3-0.6B \
   --prompt "Introduce CUDA briefly." \
-  --max-tokens 32 \
+  --max-tokens 64 \
   --device cuda \
-  --temperature 0 \
   --benchmark \
   --benchmark-requests 32 \
-  --benchmark-warmup 1
+  --benchmark-warmup 1 \
+  --use-kv-cache
+```
+
+Paged KV interleaved benchmark command:
+
+```bash
+./build/LiteLLMEngine \
+  --model /root/rivermind-data/Qwen_Qwen3-0.6B \
+  --prompt "Introduce CUDA briefly." \
+  --max-tokens 64 \
+  --device cuda \
+  --benchmark \
+  --benchmark-requests 32 \
+  --benchmark-warmup 1 \
+  --use-paged-kv-cache \
+  --benchmark-interleaved \
+  --page-size 16
+```
+
+Paged KV batch decode benchmark command:
+
+```bash
+./build/LiteLLMEngine \
+  --model /root/rivermind-data/Qwen_Qwen3-0.6B \
+  --prompt "Introduce CUDA briefly." \
+  --max-tokens 64 \
+  --device cuda \
+  --benchmark \
+  --benchmark-requests 32 \
+  --benchmark-warmup 1 \
+  --use-paged-kv-cache \
+  --benchmark-batch-decode \
+  --page-size 16
 ```
 
 
 
 ## 内存分配查看工具
-
