@@ -131,22 +131,31 @@ void RequestManager::append_token(
         );
     }
 
+    if (req.status != RequestStatus::Decoding) {
+        throw std::runtime_error(
+            "RequestManager append_token expects Decoding request"
+        );
+    }
+
     req.input_ids.push_back(token_id);
     req.generated_ids.push_back(token_id);
 
     if (req.eos_token_id >= 0 &&
         token_id == req.eos_token_id) {
         req.status = RequestStatus::Finished;
+        req.check_valid();
         return;
     }
 
     if (req.max_new_tokens >= 0 &&
         static_cast<int64_t>(req.generated_ids.size()) >= req.max_new_tokens) {
         req.status = RequestStatus::Finished;
+        req.check_valid();
         return;
     }
 
     req.status = RequestStatus::Decoding;
+    req.check_valid();
 }
 
 void RequestManager::finish_request(int64_t request_id) {
@@ -228,6 +237,7 @@ void RequestManager::append_input_tokens(
 
     // 新一轮对话开始，上一轮 assistant 生成结果不应该继续计数。
     req.generated_ids.clear();
+    req.prompt_len = req.device_len();
 
     if (req.cached_len == 0) {
         req.status = RequestStatus::WaitingPrefill;
@@ -259,6 +269,7 @@ void RequestManager::reset_generation_options(
     req.max_new_tokens = max_new_tokens;
     req.eos_token_id = eos_token_id;
     req.generated_ids.clear();
+    req.prompt_len = req.device_len();
 
     if (req.cached_len == 0) {
         req.status = RequestStatus::WaitingPrefill;

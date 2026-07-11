@@ -187,7 +187,7 @@ static void test_multiple_decode_steps() {
     assert(req.status == RequestStatus::Decoding);
 }
 
-static void test_eos_token_not_appended() {
+static void test_eos_token_appended() {
     RequestManager manager;
 
     const int64_t id = manager.add_request({1, 2}, 5, 99);
@@ -204,14 +204,16 @@ static void test_eos_token_not_appended() {
     assert(req.finished());
     assert(!req.can_decode());
 
-    assert(req.input_ids.size() == 3);
-    assert(req.generated_ids.size() == 1);
+    assert(req.input_ids.size() == 4);
+    assert(req.generated_ids.size() == 2);
 
     assert(req.input_ids[0] == 1);
     assert(req.input_ids[1] == 2);
     assert(req.input_ids[2] == 10);
+    assert(req.input_ids[3] == 99);
 
     assert(req.generated_ids[0] == 10);
+    assert(req.generated_ids[1] == 99);
 }
 
 static void test_max_new_tokens_finish() {
@@ -368,7 +370,7 @@ int main() {
     test_append_token();
     test_decode_forward_done();
     test_multiple_decode_steps();
-    test_eos_token_not_appended();
+    test_eos_token_appended();
     test_max_new_tokens_finish();
     test_zero_max_new_tokens();
     test_status_lists();
