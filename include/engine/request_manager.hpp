@@ -63,6 +63,22 @@ public:
     int64_t num_requests() const;
 
     void mark_forward_done(int64_t request_id);
+    void mark_forward_done(
+        int64_t request_id,
+        int64_t num_tokens
+    );
+
+
+    void append_input_tokens(
+        int64_t request_id,
+        const std::vector<int32_t>& token_ids
+    );
+
+    void reset_generation_options(
+      int64_t request_id,
+      int64_t max_new_tokens,
+      int32_t eos_token_id
+  );
 
 private:
     int64_t next_request_id_ = 0;

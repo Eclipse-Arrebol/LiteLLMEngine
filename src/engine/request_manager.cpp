@@ -113,6 +113,12 @@ void RequestManager::mark_prefill_done(int64_t request_id) {
     req.check_valid();
 }
 
+/**
+ * @brief 向指定对话添加token
+ * 
+ * @param request_id 
+ * @param token_id 
+ */
 void RequestManager::append_token(
     int64_t request_id,
     int32_t token_id
@@ -120,35 +126,27 @@ void RequestManager::append_token(
     GenerationRequest& req = request(request_id);
 
     if (req.status == RequestStatus::Finished) {
-        return;
-    }
-
-    if (req.status != RequestStatus::Decoding) {
-        throw std::runtime_error("append_token expects Decoding request");
-    }
-
-    if (req.eos_token_id >= 0 && token_id == req.eos_token_id) {
-        req.status = RequestStatus::Finished;
-        req.check_valid();
-        return;
-    }
-
-    if (req.remain_len() <= 0) {
-        req.status = RequestStatus::Finished;
-        req.check_valid();
-        return;
+        throw std::runtime_error(
+            "RequestManager append_token called on finished request"
+        );
     }
 
     req.input_ids.push_back(token_id);
     req.generated_ids.push_back(token_id);
 
-    if (req.remain_len() <= 0) {
+    if (req.eos_token_id >= 0 &&
+        token_id == req.eos_token_id) {
         req.status = RequestStatus::Finished;
-    } else {
-        req.status = RequestStatus::Decoding;
+        return;
     }
 
-    req.check_valid();
+    if (req.max_new_tokens >= 0 &&
+        static_cast<int64_t>(req.generated_ids.size()) >= req.max_new_tokens) {
+        req.status = RequestStatus::Finished;
+        return;
+    }
+
+    req.status = RequestStatus::Decoding;
 }
 
 void RequestManager::finish_request(int64_t request_id) {
@@ -179,5 +177,95 @@ void RequestManager::mark_forward_done(int64_t request_id) {
 
     req.check_valid();
 }
+
+void RequestManager::mark_forward_done(
+    int64_t request_id,
+    int64_t num_tokens
+) {
+    GenerationRequest& req = request(request_id);
+
+    if (num_tokens < 0) {
+        throw std::runtime_error(
+            "RequestManager mark_forward_done num_tokens must be non-negative"
+        );
+    }
+
+    if (req.cached_len + num_tokens > req.device_len()) {
+        throw std::runtime_error(
+            "RequestManager mark_forward_done exceeds device_len"
+        );
+    }
+
+    req.cached_len += num_tokens;
+
+    if (req.status != RequestStatus::Finished) {
+        req.status = RequestStatus::Decoding;
+    }
+}
+
+
+/**
+ * @brief 添加一系列的tokens
+ * 
+ * @param request_id 
+ * @param token_ids 
+ */
+void RequestManager::append_input_tokens(
+    int64_t request_id,
+    const std::vector<int32_t>& token_ids
+) {
+    if (token_ids.empty()) {
+        return;
+    }
+
+    GenerationRequest& req = request(request_id);
+
+    req.input_ids.insert(
+        req.input_ids.end(),
+        token_ids.begin(),
+        token_ids.end()
+    );
+
+    // 新一轮对话开始，上一轮 assistant 生成结果不应该继续计数。
+    req.generated_ids.clear();
+
+    if (req.cached_len == 0) {
+        req.status = RequestStatus::WaitingPrefill;
+    } else {
+        req.status = RequestStatus::Decoding;
+    }
+}
+
+/**
+ * @brief 重新设置最大token和eos
+ * 
+ * @param request_id 
+ * @param max_new_tokens 
+ * @param eos_token_id 
+ */
+void RequestManager::reset_generation_options(
+    int64_t request_id,
+    int64_t max_new_tokens,
+    int32_t eos_token_id
+) {
+    if (max_new_tokens < 0) {
+        throw std::runtime_error(
+            "RequestManager reset_generation_options max_new_tokens must be non-negative"
+        );
+    }
+
+    GenerationRequest& req = request(request_id);
+
+    req.max_new_tokens = max_new_tokens;
+    req.eos_token_id = eos_token_id;
+    req.generated_ids.clear();
+
+    if (req.cached_len == 0) {
+        req.status = RequestStatus::WaitingPrefill;
+    } else {
+        req.status = RequestStatus::Decoding;
+    }
+}
+
 
 }  // namespace lite_llm

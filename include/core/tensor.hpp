@@ -67,6 +67,11 @@ public:
         size_t bytes
     );
 
+    static Tensor from_int32_vector(
+        const std::vector<int32_t>& data,
+        Device device
+    );
+
 private:
     void release_() noexcept;
     void allocate_();

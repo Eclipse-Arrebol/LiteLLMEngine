@@ -173,6 +173,26 @@ void Tensor::copy_from_tensor(
     }
 }
 
+Tensor Tensor::from_int32_vector(
+    const std::vector<int32_t>& data,
+    Device device
+) {
+    Tensor tensor(
+        {static_cast<int64_t>(data.size())},
+        DType::INT32,
+        device
+    );
+
+    if (!data.empty()) {
+        tensor.copy_from_cpu(
+            data.data(),
+            data.size() * sizeof(int32_t)
+        );
+    }
+
+    return tensor;
+}
+
 void Tensor::allocate_() {
     size_t bytes = nbytes();
 

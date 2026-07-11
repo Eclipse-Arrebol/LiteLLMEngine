@@ -264,7 +264,11 @@ add_test(NAME test_qwen3_attention_paged_kv_cache COMMAND test_qwen3_attention_p
 
 
 
-
 add_executable(test_generate_paged_kv_cache tests/test_generate_paged_kv_cache.cpp)
 target_link_libraries(test_generate_paged_kv_cache PRIVATE litellm_engine_core)
 add_test(NAME test_generate_paged_kv_cache COMMAND test_generate_paged_kv_cache)
+
+
+add_executable(test_paged_generate_engine tests/test_paged_generate_engine.cpp)
+target_link_libraries(test_paged_generate_engine PRIVATE litellm_engine_core)
+add_test(NAME test_paged_generate_engine COMMAND test_paged_generate_engine)

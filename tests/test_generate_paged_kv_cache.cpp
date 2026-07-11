@@ -6,7 +6,6 @@
 #include "weights/weight_map.hpp"
 
 #include <cassert>
-#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
