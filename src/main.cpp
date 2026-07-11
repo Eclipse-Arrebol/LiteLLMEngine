@@ -50,6 +50,7 @@ int main(int argc, char** argv) {
         std::cout << "  use_paged_kv_cache:       " << args.use_paged_kv_cache << "\n";
         std::cout << "  page_size:       " << args.page_size << "\n";
         std::cout << "  benchmark_interleaved:    " << args.benchmark_interleaved << "\n";
+        std::cout << "  benchmark_batch_decode:   " << args.benchmark_batch_decode << "\n";
 
         
         std::cout << "\nLoading model metadata...\n";
@@ -67,6 +68,18 @@ int main(int argc, char** argv) {
         if (args.benchmark_interleaved && !args.use_paged_kv_cache) {
             throw std::runtime_error(
                 "--benchmark-interleaved requires --use-paged-kv-cache"
+            );
+        }
+
+        if (args.benchmark_batch_decode && !args.use_paged_kv_cache) {
+            throw std::runtime_error(
+                "--benchmark-batch-decode requires --use-paged-kv-cache"
+            );
+        }
+
+        if (args.benchmark_interleaved && args.benchmark_batch_decode) {
+            throw std::runtime_error(
+                "Cannot enable both --benchmark-interleaved and --benchmark-batch-decode"
             );
         }
 
@@ -183,6 +196,7 @@ int main(int argc, char** argv) {
             bench_options.use_kv_cache = args.use_kv_cache;
             bench_options.use_paged_kv_cache = args.use_paged_kv_cache;
             bench_options.interleaved = args.benchmark_interleaved;
+            bench_options.batch_decode = args.benchmark_batch_decode;
             bench_options.page_size = args.page_size;
 
             std::cout << "\nRunning generation benchmark...\n";
@@ -190,7 +204,9 @@ int main(int argc, char** argv) {
             std::cout << "  Mode:            ";
 
             if (bench_options.use_paged_kv_cache) {
-                if (bench_options.interleaved) {
+                if (bench_options.batch_decode) {
+                    std::cout << "Paged KV cache batch decode\n";
+                } else if (bench_options.interleaved) {
                     std::cout << "Paged KV cache interleaved\n";
                 } else {
                     std::cout << "Paged KV cache\n";

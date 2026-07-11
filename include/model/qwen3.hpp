@@ -95,6 +95,12 @@ public:
         Tensor& output
     ) const;
 
+    void forward_decode_batch(
+        const Tensor& hidden_states,
+        const BatchDecodeForwardContext& context,
+        Tensor& output
+    ) const;
+
     void load_weights(WeightMap& weights, const std::string& prefix);
 
     int64_t hidden_size() const {
@@ -161,6 +167,12 @@ public:
         Tensor& output
     ) const;
 
+    void forward_decode_batch(
+        const Tensor& hidden_states,
+        const BatchDecodeForwardContext& context,
+        Tensor& output
+    ) const;
+
     void load_weights(WeightMap& weights, const std::string& prefix);
 
 private:
@@ -194,6 +206,12 @@ public:
     void forward(
         const Tensor& input_ids,
         const ForwardContext& context,
+        Tensor& hidden_states
+    ) const;
+
+    void forward_decode_batch(
+        const Tensor& input_ids,
+        const BatchDecodeForwardContext& context,
         Tensor& hidden_states
     ) const;
 
@@ -238,6 +256,12 @@ public:
     void forward(
         const Tensor& input_ids,
         const ForwardContext& context,
+        Tensor& logits
+    ) const;
+
+    void forward_decode_batch(
+        const Tensor& input_ids,
+        const BatchDecodeForwardContext& context,
         Tensor& logits
     ) const;
 

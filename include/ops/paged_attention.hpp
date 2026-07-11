@@ -6,6 +6,7 @@
 #include "engine/paged_kv_cache.hpp"
 
 #include <cstdint>
+#include <vector>
 
 namespace lite_llm {
 
@@ -16,6 +17,16 @@ void paged_attention_decode_cpu(
     int64_t table_idx,
     int64_t layer_idx,
     int64_t kv_seq_len,
+    Tensor& output
+);
+
+void paged_attention_decode_batch_gather(
+    const Tensor& query,
+    const ModelPagedKVCache& paged_kv_cache,
+    const BlockTableManager& table_manager,
+    const std::vector<int64_t>& table_indices,
+    int64_t layer_idx,
+    const std::vector<int64_t>& kv_seq_lens,
     Tensor& output
 );
 

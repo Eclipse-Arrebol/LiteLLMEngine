@@ -2,6 +2,8 @@
 
 #include "ops/paged_attention.hpp"
 
+#include "ops/attention.hpp"
+
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -42,6 +44,12 @@ void check_tensor_cpu_fp32(const Tensor& t, const char* name) {
         throw std::runtime_error(std::string(name) + " must be CPU tensor");
     }
 
+    if (t.dtype() != DType::FP32) {
+        throw std::runtime_error(std::string(name) + " must be FP32 tensor");
+    }
+}
+
+void check_tensor_fp32(const Tensor& t, const char* name) {
     if (t.dtype() != DType::FP32) {
         throw std::runtime_error(std::string(name) + " must be FP32 tensor");
     }
@@ -206,6 +214,135 @@ void paged_attention_decode_cpu(
 
             out_ptr[out_idx] = acc;
         }
+    }
+}
+
+void paged_attention_decode_batch_gather(
+    const Tensor& query,
+    const ModelPagedKVCache& paged_kv_cache,
+    const BlockTableManager& table_manager,
+    const std::vector<int64_t>& table_indices,
+    int64_t layer_idx,
+    const std::vector<int64_t>& kv_seq_lens,
+    Tensor& output
+) {
+    check_tensor_fp32(query, "query");
+    check_tensor_fp32(output, "output");
+
+    if (query.shape().size() != 3) {
+        throw std::runtime_error(
+            "query must be 3D [batch_size, num_q_heads, head_dim]"
+        );
+    }
+
+    if (output.shape() != query.shape()) {
+        throw std::runtime_error(
+            "paged_attention_decode_batch_gather output shape mismatch"
+        );
+    }
+
+    if (query.device() != output.device()) {
+        throw std::runtime_error(
+            "paged_attention_decode_batch_gather query and output must be on same device"
+        );
+    }
+
+    const int64_t batch_size = query.shape()[0];
+    const int64_t num_q_heads = query.shape()[1];
+    const int64_t head_dim = query.shape()[2];
+
+    if (batch_size <= 0 || num_q_heads <= 0 || head_dim <= 0) {
+        throw std::runtime_error(
+            "paged_attention_decode_batch_gather invalid query shape"
+        );
+    }
+
+    if (head_dim != paged_kv_cache.head_dim()) {
+        throw std::runtime_error(
+            "paged_attention_decode_batch_gather head_dim mismatch"
+        );
+    }
+
+    if (table_indices.size() != static_cast<size_t>(batch_size) ||
+        kv_seq_lens.size() != static_cast<size_t>(batch_size)) {
+        throw std::runtime_error(
+            "paged_attention_decode_batch_gather batch metadata size mismatch"
+        );
+    }
+
+    const size_t row_bytes =
+        static_cast<size_t>(num_q_heads * head_dim) * sizeof(float);
+
+    for (int64_t row = 0; row < batch_size; ++row) {
+        const int64_t table_idx =
+            table_indices[static_cast<size_t>(row)];
+
+        const int64_t kv_seq_len =
+            kv_seq_lens[static_cast<size_t>(row)];
+
+        if (table_idx < 0) {
+            throw std::runtime_error(
+                "paged_attention_decode_batch_gather invalid table_idx"
+            );
+        }
+
+        if (kv_seq_len <= 0) {
+            throw std::runtime_error(
+                "paged_attention_decode_batch_gather kv_seq_len must be positive"
+            );
+        }
+
+        Tensor query_row(
+            {1, num_q_heads, head_dim},
+            DType::FP32,
+            query.device()
+        );
+
+        Tensor output_row(
+            {1, num_q_heads, head_dim},
+            DType::FP32,
+            output.device()
+        );
+
+        query_row.copy_from_tensor(
+            query,
+            0,
+            static_cast<size_t>(row) * row_bytes,
+            row_bytes
+        );
+
+        if (query.device() == Device::CPU) {
+            paged_attention_decode_cpu(
+                query_row,
+                paged_kv_cache,
+                table_manager,
+                table_idx,
+                layer_idx,
+                kv_seq_len,
+                output_row
+            );
+        } else if (query.device() == Device::CUDA) {
+            flash_attention_paged_kv_cache_cuda(
+                query_row,
+                paged_kv_cache,
+                table_manager,
+                table_idx,
+                layer_idx,
+                kv_seq_len,
+                output_row
+            );
+        } else {
+            throw std::runtime_error(
+                "paged_attention_decode_batch_gather unsupported device"
+            );
+        }
+
+        output.copy_from_tensor(
+            output_row,
+            static_cast<size_t>(row) * row_bytes,
+            0,
+            row_bytes
+        );
     }
 }
 

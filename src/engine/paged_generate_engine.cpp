@@ -179,6 +179,167 @@ int32_t PagedGenerateEngine::decode_one_step(
     return next_token_id;
 }
 
+std::vector<int32_t> PagedGenerateEngine::decode_batch(
+    const std::vector<int64_t>& active_request_ids
+) {
+    if (active_request_ids.empty()) {
+        return {};
+    }
+
+    std::vector<int64_t> request_ids;
+    request_ids.reserve(active_request_ids.size());
+
+    for (int64_t request_id : active_request_ids) {
+        GenerationRequest& req =
+            request_manager_.request(request_id);
+
+        if (req.status == RequestStatus::Finished) {
+            continue;
+        }
+
+        if (req.extend_len() != 1) {
+            throw std::runtime_error(
+                "PagedGenerateEngine decode_batch expects every active request extend_len == 1"
+            );
+        }
+
+        paged_kv_manager_.ensure_blocks(
+            req,
+            req.cached_len + 1
+        );
+
+        request_ids.push_back(request_id);
+    }
+
+    if (request_ids.empty()) {
+        return {};
+    }
+
+    const int64_t batch_size =
+        static_cast<int64_t>(request_ids.size());
+
+    std::vector<int32_t> input_ids_cpu;
+    std::vector<int32_t> position_ids_cpu;
+    std::vector<int64_t> table_indices;
+    std::vector<int64_t> past_lens;
+    std::vector<int64_t> kv_seq_lens;
+
+    input_ids_cpu.reserve(static_cast<size_t>(batch_size));
+    position_ids_cpu.reserve(static_cast<size_t>(batch_size));
+    table_indices.reserve(static_cast<size_t>(batch_size));
+    past_lens.reserve(static_cast<size_t>(batch_size));
+    kv_seq_lens.reserve(static_cast<size_t>(batch_size));
+
+    for (int64_t request_id : request_ids) {
+        const GenerationRequest& req =
+            request_manager_.request(request_id);
+
+        if (req.table_idx < 0) {
+            throw std::runtime_error(
+                "PagedGenerateEngine decode_batch request has no table_idx"
+            );
+        }
+
+        input_ids_cpu.push_back(req.input_ids.back());
+        position_ids_cpu.push_back(
+            static_cast<int32_t>(req.cached_len)
+        );
+        table_indices.push_back(req.table_idx);
+        past_lens.push_back(req.cached_len);
+        kv_seq_lens.push_back(req.cached_len + 1);
+    }
+
+    Tensor input_ids_tensor =
+        Tensor::from_int32_vector(
+            input_ids_cpu,
+            options_.device
+        );
+
+    Tensor position_ids_tensor =
+        Tensor::from_int32_vector(
+            position_ids_cpu,
+            options_.device
+        );
+
+    Tensor logits(
+        {batch_size, model_.config().vocab_size},
+        DType::FP32,
+        options_.device
+    );
+
+    BatchDecodeForwardContext context;
+    context.position_ids = &position_ids_tensor;
+    context.batch_size = batch_size;
+    context.use_paged_kv_cache = true;
+    context.paged_kv_cache = &paged_kv_manager_.paged_kv_cache();
+    context.block_table_manager = &paged_kv_manager_.block_table_manager();
+    context.table_indices = &table_indices;
+    context.past_lens = &past_lens;
+    context.kv_seq_lens = &kv_seq_lens;
+
+    const TensorMemorySnapshot mem_before =
+        tensor_memory_snapshot();
+
+    model_.forward_decode_batch(
+        input_ids_tensor,
+        context,
+        logits
+    );
+
+    const TensorMemorySnapshot mem_after =
+        tensor_memory_snapshot();
+
+    if (options_.verbose) {
+        print_tensor_memory_delta(
+            "paged_engine batch_decode forward",
+            mem_before,
+            mem_after
+        );
+    }
+
+    const std::vector<int32_t> next_token_ids =
+        argmax_each_row(logits);
+
+    if (next_token_ids.size() != request_ids.size()) {
+        throw std::runtime_error(
+            "PagedGenerateEngine decode_batch sampled token count mismatch"
+        );
+    }
+
+    for (size_t i = 0; i < request_ids.size(); ++i) {
+        const int64_t request_id = request_ids[i];
+        const int32_t token_id = next_token_ids[i];
+
+        request_manager_.mark_forward_done(
+            request_id,
+            1
+        );
+
+        append_sampled_token(
+            request_id,
+            token_id
+        );
+
+        if (options_.verbose) {
+            const GenerationRequest& updated_req =
+                request_manager_.request(request_id);
+
+            std::cerr << "[paged_engine] batch_decode"
+                      << ", request_id="
+                      << request_id
+                      << ", cached_len="
+                      << updated_req.cached_len
+                      << ", device_len="
+                      << updated_req.device_len()
+                      << ", next_token_id="
+                      << token_id
+                      << std::endl;
+        }
+    }
+
+    return next_token_ids;
+}
+
 std::vector<int32_t> PagedGenerateEngine::generate_until_finished(
     int64_t request_id
 ) {

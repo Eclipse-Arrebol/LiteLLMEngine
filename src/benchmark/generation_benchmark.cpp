@@ -38,9 +38,14 @@ double now_ms() {
 const char* benchmark_mode_name(
     bool use_kv_cache,
     bool use_paged_kv_cache,
-    bool interleaved
+    bool interleaved,
+    bool batch_decode
 ) {
     if (use_paged_kv_cache) {
+        if (batch_decode) {
+            return "Paged KV cache batch decode";
+        }
+
         if (interleaved) {
             return "Paged KV cache interleaved";
         }
@@ -229,6 +234,111 @@ int64_t run_paged_interleaved_generation(
     return total_new_tokens;
 }
 
+int64_t run_paged_batch_decode_generation(
+    const Qwen3ForCausalLM& model,
+    const std::vector<int32_t>& input_ids,
+    const GenerationBenchmarkOptions& options,
+    const GreedyGenerateOptions& gen_options
+) {
+    if (!options.use_paged_kv_cache) {
+        throw std::runtime_error(
+            "run_paged_batch_decode_generation requires paged KV cache"
+        );
+    }
+
+    if (options.num_requests <= 0) {
+        throw std::runtime_error(
+            "run_paged_batch_decode_generation num_requests must be positive"
+        );
+    }
+
+    if (gen_options.max_new_tokens == 0) {
+        return 0;
+    }
+
+    const int64_t tokens_per_request =
+        static_cast<int64_t>(input_ids.size()) +
+        gen_options.max_new_tokens +
+        16;
+
+    const int64_t max_total_tokens =
+        tokens_per_request *
+        static_cast<int64_t>(options.num_requests);
+
+    PagedGenerateEngine engine(
+        model,
+        gen_options,
+        max_total_tokens,
+        options.page_size
+    );
+
+    std::vector<int64_t> request_ids;
+    request_ids.reserve(
+        static_cast<size_t>(options.num_requests)
+    );
+
+    for (int32_t i = 0; i < options.num_requests; ++i) {
+        const int64_t request_id =
+            engine.add_request(
+                input_ids,
+                gen_options.max_new_tokens,
+                gen_options.eos_token_id
+            );
+
+        request_ids.push_back(request_id);
+    }
+
+    for (int64_t request_id : request_ids) {
+        if (!engine.finished(request_id)) {
+            engine.prefill(request_id);
+        }
+    }
+
+    bool all_finished = false;
+
+    while (!all_finished) {
+        all_finished = true;
+
+        std::vector<int64_t> active_request_ids;
+        active_request_ids.reserve(request_ids.size());
+
+        for (int64_t request_id : request_ids) {
+            if (!engine.finished(request_id)) {
+                all_finished = false;
+                active_request_ids.push_back(request_id);
+            }
+        }
+
+        if (!active_request_ids.empty()) {
+            engine.decode_batch(active_request_ids);
+        }
+    }
+
+    int64_t total_new_tokens = 0;
+
+    for (int64_t request_id : request_ids) {
+        const GenerationRequest& req =
+            engine.request(request_id);
+
+        if (req.input_ids.size() < input_ids.size()) {
+            throw std::runtime_error(
+                "run_paged_batch_decode_generation invalid output length"
+            );
+        }
+
+        total_new_tokens +=
+            static_cast<int64_t>(
+                req.input_ids.size() - input_ids.size()
+            );
+    }
+
+    for (int64_t request_id : request_ids) {
+        engine.release_request(request_id);
+    }
+
+    return total_new_tokens;
+}
+
 int64_t count_new_tokens(
     const std::vector<int32_t>& input_ids,
     const std::vector<int32_t>& output_ids
@@ -299,6 +409,18 @@ GenerationBenchmarkResult benchmark_generate_greedy(
         );
     }
 
+    if (options.batch_decode && !options.use_paged_kv_cache) {
+        throw std::runtime_error(
+            "benchmark_generate_greedy: batch decode benchmark requires Paged KV cache"
+        );
+    }
+
+    if (options.interleaved && options.batch_decode) {
+        throw std::runtime_error(
+            "benchmark_generate_greedy: cannot enable both interleaved and batch decode benchmark modes"
+        );
+    }
+
     GreedyGenerateOptions gen_options;
     gen_options.max_new_tokens = options.max_new_tokens;
     gen_options.eos_token_id = options.eos_token_id;
@@ -306,7 +428,14 @@ GenerationBenchmarkResult benchmark_generate_greedy(
     gen_options.device = options.device;
 
     for (int32_t i = 0; i < options.warmup_requests; ++i) {
-        if (options.interleaved) {
+        if (options.batch_decode) {
+            (void)run_paged_batch_decode_generation(
+                model,
+                input_ids,
+                options,
+                gen_options
+            );
+        } else if (options.interleaved) {
             (void)run_paged_interleaved_generation(
                 model,
                 input_ids,
@@ -329,7 +458,15 @@ GenerationBenchmarkResult benchmark_generate_greedy(
 
     int64_t total_new_tokens = 0;
 
-    if (options.interleaved) {
+    if (options.batch_decode) {
+        total_new_tokens =
+            run_paged_batch_decode_generation(
+                model,
+                input_ids,
+                options,
+                gen_options
+            );
+    } else if (options.interleaved) {
         total_new_tokens =
             run_paged_interleaved_generation(
                 model,
@@ -375,6 +512,7 @@ GenerationBenchmarkResult benchmark_generate_greedy(
     result.use_kv_cache = options.use_kv_cache;
     result.use_paged_kv_cache = options.use_paged_kv_cache;
     result.interleaved = options.interleaved;
+    result.batch_decode = options.batch_decode;
     result.page_size = options.page_size;
 
     if (total_new_tokens > 0 && elapsed_s > 0.0) {
@@ -399,7 +537,8 @@ void print_generation_benchmark_result(
               << benchmark_mode_name(
                      result.use_kv_cache,
                      result.use_paged_kv_cache,
-                     result.interleaved
+                     result.interleaved,
+                     result.batch_decode
                  )
               << "\n";
 

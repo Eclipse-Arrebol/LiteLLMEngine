@@ -5,6 +5,7 @@
 #include "core/tensor.hpp"
 
 #include <cstdint>
+#include <vector>
 
 namespace lite_llm {
 
@@ -28,6 +29,22 @@ struct ForwardContext {
     BlockTableManager* block_table_manager = nullptr;
     int64_t table_idx = -1;
     int64_t kv_seq_len = 0;
+};
+
+struct BatchDecodeForwardContext {
+    const Tensor* position_ids = nullptr;
+
+    int64_t batch_size = 0;
+
+    bool use_paged_kv_cache = false;
+    ModelPagedKVCache* paged_kv_cache = nullptr;
+    BlockTableManager* block_table_manager = nullptr;
+
+    const std::vector<int64_t>* table_indices = nullptr;
+    const std::vector<int64_t>* past_lens = nullptr;
+    const std::vector<int64_t>* kv_seq_lens = nullptr;
+
+    int64_t layer_idx = -1;
 };
 
 }  // namespace lite_llm

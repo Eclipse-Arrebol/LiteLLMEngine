@@ -25,6 +25,9 @@ struct GenerationBenchmarkOptions {
     // 是否在同一个 PagedGenerateEngine 里跑多个 request
     bool interleaved = false;
 
+    // 是否把当前 active decoding requests 合成一次 batch decode forward
+    bool batch_decode = false;
+
     int64_t page_size = 16;
 
     Device device = Device::CUDA;
@@ -43,6 +46,7 @@ struct GenerationBenchmarkResult {
     bool use_kv_cache = false;
     bool use_paged_kv_cache = false;
     bool interleaved = false;
+    bool batch_decode = false;
 
     int64_t page_size = 16;
 };

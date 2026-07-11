@@ -36,6 +36,11 @@ public:
     int32_t prefill(int64_t request_id);
     int32_t decode_one_step(int64_t request_id);
 
+    // Returns sampled tokens for unfinished requests kept from active_request_ids.
+    std::vector<int32_t> decode_batch(
+        const std::vector<int64_t>& active_request_ids
+    );
+
     std::vector<int32_t> generate_until_finished(int64_t request_id);
 
     const GenerationRequest& request(int64_t request_id) const;

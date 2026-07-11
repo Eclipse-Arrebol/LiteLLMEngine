@@ -70,6 +70,7 @@ void print_usage(const char* program) {
         << "  --eos-token-id <int>  Stop generation when this token id is generated\n";
         std::cout << "  --use-paged-kv-cache          Enable paged KV cache generation\n";
         std::cout << "  --page-size <N>               Paged KV cache page size, default 16\n";  
+        std::cout << "  --benchmark-batch-decode      Batch active paged decode requests in benchmark\n";
 }
 /**
  * @brief 解析输入参数
@@ -120,7 +121,10 @@ Args parse_args(int argc, char** argv) {
         } else if (arg == "--page-size" || starts_with(arg, "--page-size=")) {
             args.page_size = std::stoll(get_arg_value(i, argc, argv, arg));
         } else if (arg == "--benchmark-interleaved") {
-            args.benchmark_interleaved = true;}
+            args.benchmark_interleaved = true;
+        } else if (arg == "--benchmark-batch-decode") {
+            args.benchmark_batch_decode = true;
+        }
         else {
             throw std::runtime_error("Unknown argument: " + arg);
         }

@@ -567,6 +567,277 @@ void Qwen3Attention::forward(
     o_proj_.forward(attn_out_flat, output);
 }
 
+void Qwen3Attention::forward_decode_batch(
+    const Tensor& hidden_states,
+    const BatchDecodeForwardContext& context,
+    Tensor& output
+) const {
+    if (!initialized()) {
+        throw std::runtime_error(
+            "Qwen3Attention::forward_decode_batch called before weights are initialized"
+        );
+    }
+
+    if (context.position_ids == nullptr) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode position_ids is null"
+        );
+    }
+
+    if (!context.use_paged_kv_cache ||
+        context.paged_kv_cache == nullptr ||
+        context.block_table_manager == nullptr ||
+        context.table_indices == nullptr ||
+        context.past_lens == nullptr ||
+        context.kv_seq_lens == nullptr) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode requires paged KV cache metadata"
+        );
+    }
+
+    if (context.layer_idx < 0) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode layer_idx is invalid"
+        );
+    }
+
+    const Tensor& position_ids = *context.position_ids;
+
+    if (hidden_states.dtype() != DType::FP32 ||
+        output.dtype() != DType::FP32) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode tensors must be FP32"
+        );
+    }
+
+    if (position_ids.dtype() != DType::INT32) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode position_ids must be INT32"
+        );
+    }
+
+    if (hidden_states.shape().size() != 2 ||
+        output.shape().size() != 2) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode hidden/output must be 2D"
+        );
+    }
+
+    if (position_ids.shape().size() != 1) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode position_ids must be 1D"
+        );
+    }
+
+    const int64_t batch_size = hidden_states.shape()[0];
+
+    if (context.batch_size != batch_size) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode batch_size mismatch"
+        );
+    }
+
+    if (batch_size <= 0) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode batch_size must be positive"
+        );
+    }
+
+    if (hidden_states.shape()[1] != hidden_size_ ||
+        output.shape()[0] != batch_size ||
+        output.shape()[1] != hidden_size_) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode hidden/output shape mismatch"
+        );
+    }
+
+    if (position_ids.shape()[0] != batch_size) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode position_ids shape mismatch"
+        );
+    }
+
+    if (context.table_indices->size() != static_cast<size_t>(batch_size) ||
+        context.past_lens->size() != static_cast<size_t>(batch_size) ||
+        context.kv_seq_lens->size() != static_cast<size_t>(batch_size)) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode metadata size mismatch"
+        );
+    }
+
+    for (int64_t i = 0; i < batch_size; ++i) {
+        const int64_t past_len =
+            (*context.past_lens)[static_cast<size_t>(i)];
+        const int64_t kv_seq_len =
+            (*context.kv_seq_lens)[static_cast<size_t>(i)];
+
+        if (past_len < 0 || kv_seq_len != past_len + 1) {
+            throw std::runtime_error(
+                "Qwen3Attention batch decode invalid kv_seq_len"
+            );
+        }
+    }
+
+    if (hidden_states.device() != position_ids.device() ||
+        hidden_states.device() != output.device()) {
+        throw std::runtime_error(
+            "Qwen3Attention batch decode tensors must be on same device"
+        );
+    }
+
+    const Device device = hidden_states.device();
+
+    const int64_t q_size = num_attention_heads_ * head_dim_;
+    const int64_t kv_size = num_key_value_heads_ * head_dim_;
+
+    Tensor q_flat({batch_size, q_size}, DType::FP32, device);
+    Tensor k_flat({batch_size, kv_size}, DType::FP32, device);
+    Tensor v_flat({batch_size, kv_size}, DType::FP32, device);
+
+    q_proj_.forward(hidden_states, q_flat);
+    k_proj_.forward(hidden_states, k_flat);
+    v_proj_.forward(hidden_states, v_flat);
+
+    Tensor q_2d(
+        {batch_size * num_attention_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    Tensor k_2d(
+        {batch_size * num_key_value_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    tensor_copy(q_flat, q_2d);
+    tensor_copy(k_flat, k_2d);
+
+    Tensor q_normed_2d(
+        {batch_size * num_attention_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    Tensor k_normed_2d(
+        {batch_size * num_key_value_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    q_norm_.forward(q_2d, q_normed_2d);
+    k_norm_.forward(k_2d, k_normed_2d);
+
+    Tensor q_3d(
+        {batch_size, num_attention_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    Tensor k_3d(
+        {batch_size, num_key_value_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    Tensor v_3d(
+        {batch_size, num_key_value_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    tensor_copy(q_normed_2d, q_3d);
+    tensor_copy(k_normed_2d, k_3d);
+    tensor_copy(v_flat, v_3d);
+
+    Tensor q_rot(
+        {batch_size, num_attention_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    Tensor k_rot(
+        {batch_size, num_key_value_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    rotary_.apply(
+        q_3d,
+        k_3d,
+        position_ids,
+        q_rot,
+        k_rot
+    );
+
+    const size_t kv_row_bytes =
+        static_cast<size_t>(num_key_value_heads_ * head_dim_) *
+        sizeof(float);
+
+    for (int64_t row = 0; row < batch_size; ++row) {
+        Tensor k_row(
+            {1, num_key_value_heads_, head_dim_},
+            DType::FP32,
+            device
+        );
+
+        Tensor v_row(
+            {1, num_key_value_heads_, head_dim_},
+            DType::FP32,
+            device
+        );
+
+        k_row.copy_from_tensor(
+            k_rot,
+            0,
+            static_cast<size_t>(row) * kv_row_bytes,
+            kv_row_bytes
+        );
+
+        v_row.copy_from_tensor(
+            v_3d,
+            0,
+            static_cast<size_t>(row) * kv_row_bytes,
+            kv_row_bytes
+        );
+
+        context.paged_kv_cache->update_layer(
+            context.layer_idx,
+            *context.block_table_manager,
+            (*context.table_indices)[static_cast<size_t>(row)],
+            (*context.past_lens)[static_cast<size_t>(row)],
+            k_row,
+            v_row
+        );
+    }
+
+    Tensor attn_out_3d(
+        {batch_size, num_attention_heads_, head_dim_},
+        DType::FP32,
+        device
+    );
+
+    paged_attention_decode_batch_gather(
+        q_rot,
+        *context.paged_kv_cache,
+        *context.block_table_manager,
+        *context.table_indices,
+        context.layer_idx,
+        *context.kv_seq_lens,
+        attn_out_3d
+    );
+
+    Tensor attn_out_flat(
+        {batch_size, q_size},
+        DType::FP32,
+        device
+    );
+
+    tensor_copy(attn_out_3d, attn_out_flat);
+
+    o_proj_.forward(attn_out_flat, output);
+}
+
 Qwen3DecoderLayer::Qwen3DecoderLayer(
     const ModelConfig& config
 )
@@ -687,6 +958,96 @@ void Qwen3DecoderLayer::forward(
 
     Tensor mlp_out(
         {num_tokens, hidden_size_},
+        DType::FP32,
+        device
+    );
+
+    post_attention_layernorm_.forward(residual_after_attn, normed_2);
+    mlp_.forward(normed_2, mlp_out);
+
+    tensor_add(residual_after_attn, mlp_out, output);
+}
+
+void Qwen3DecoderLayer::forward_decode_batch(
+    const Tensor& hidden_states,
+    const BatchDecodeForwardContext& context,
+    Tensor& output
+) const {
+    if (!initialized()) {
+        throw std::runtime_error(
+            "Qwen3DecoderLayer::forward_decode_batch called before weights are initialized"
+        );
+    }
+
+    if (layer_idx_ < 0) {
+        throw std::runtime_error(
+            "Qwen3DecoderLayer batch decode layer_idx is invalid"
+        );
+    }
+
+    if (hidden_states.dtype() != DType::FP32 ||
+        output.dtype() != DType::FP32) {
+        throw std::runtime_error(
+            "Qwen3DecoderLayer batch decode tensors must be FP32"
+        );
+    }
+
+    if (hidden_states.shape().size() != 2 ||
+        output.shape() != hidden_states.shape()) {
+        throw std::runtime_error(
+            "Qwen3DecoderLayer batch decode hidden/output shape mismatch"
+        );
+    }
+
+    if (hidden_states.shape()[1] != hidden_size_) {
+        throw std::runtime_error(
+            "Qwen3DecoderLayer batch decode hidden_size mismatch"
+        );
+    }
+
+    if (hidden_states.device() != output.device()) {
+        throw std::runtime_error(
+            "Qwen3DecoderLayer batch decode tensors must be on same device"
+        );
+    }
+
+    const int64_t batch_size = hidden_states.shape()[0];
+    const Device device = hidden_states.device();
+
+    BatchDecodeForwardContext layer_context = context;
+    layer_context.layer_idx = layer_idx_;
+
+    Tensor normed_1(
+        {batch_size, hidden_size_},
+        DType::FP32,
+        device
+    );
+
+    Tensor attn_out(
+        {batch_size, hidden_size_},
+        DType::FP32,
+        device
+    );
+
+    Tensor residual_after_attn(
+        {batch_size, hidden_size_},
+        DType::FP32,
+        device
+    );
+
+    input_layernorm_.forward(hidden_states, normed_1);
+    self_attn_.forward_decode_batch(normed_1, layer_context, attn_out);
+
+    tensor_add(hidden_states, attn_out, residual_after_attn);
+
+    Tensor normed_2(
+        {batch_size, hidden_size_},
+        DType::FP32,
+        device
+    );
+
+    Tensor mlp_out(
+        {batch_size, hidden_size_},
         DType::FP32,
         device
     );
@@ -917,6 +1278,128 @@ void Qwen3Model::forward(
     norm_.forward(*current, hidden_states);
 }
 
+void Qwen3Model::forward_decode_batch(
+    const Tensor& input_ids,
+    const BatchDecodeForwardContext& context,
+    Tensor& hidden_states
+) const {
+    if (!initialized()) {
+        throw std::runtime_error(
+            "Qwen3Model::forward_decode_batch called before weights are initialized"
+        );
+    }
+
+    if (context.position_ids == nullptr ||
+        !context.use_paged_kv_cache ||
+        context.paged_kv_cache == nullptr ||
+        context.block_table_manager == nullptr ||
+        context.table_indices == nullptr ||
+        context.past_lens == nullptr ||
+        context.kv_seq_lens == nullptr) {
+        throw std::runtime_error(
+            "Qwen3Model batch decode requires paged KV cache metadata"
+        );
+    }
+
+    if (input_ids.dtype() != DType::INT32) {
+        throw std::runtime_error(
+            "Qwen3Model batch decode input_ids must be INT32"
+        );
+    }
+
+    if (hidden_states.dtype() != DType::FP32) {
+        throw std::runtime_error(
+            "Qwen3Model batch decode hidden_states must be FP32"
+        );
+    }
+
+    if (input_ids.shape().size() != 1) {
+        throw std::runtime_error(
+            "Qwen3Model batch decode input_ids must be 1D"
+        );
+    }
+
+    if (hidden_states.shape().size() != 2) {
+        throw std::runtime_error(
+            "Qwen3Model batch decode hidden_states must be 2D"
+        );
+    }
+
+    const Tensor& position_ids = *context.position_ids;
+
+    if (position_ids.dtype() != DType::INT32 ||
+        position_ids.shape().size() != 1) {
+        throw std::runtime_error(
+            "Qwen3Model batch decode position_ids must be INT32 1D"
+        );
+    }
+
+    const int64_t batch_size = input_ids.shape()[0];
+    const int64_t hidden_size = config_.hidden_size;
+
+    if (context.batch_size != batch_size ||
+        batch_size <= 0) {
+        throw std::runtime_error(
+            "Qwen3Model batch decode batch_size mismatch"
+        );
+    }
+
+    if (position_ids.shape()[0] != batch_size ||
+        hidden_states.shape()[0] != batch_size ||
+        hidden_states.shape()[1] != hidden_size) {
+        throw std::runtime_error(
+            "Qwen3Model batch decode tensor shape mismatch"
+        );
+    }
+
+    if (input_ids.device() != position_ids.device() ||
+        input_ids.device() != hidden_states.device()) {
+        throw std::runtime_error(
+            "Qwen3Model batch decode tensors must be on same device"
+        );
+    }
+
+    const Device device = input_ids.device();
+
+    Tensor hidden_a(
+        {batch_size, hidden_size},
+        DType::FP32,
+        device
+    );
+
+    Tensor hidden_b(
+        {batch_size, hidden_size},
+        DType::FP32,
+        device
+    );
+
+    embed_tokens_.forward(input_ids, hidden_a);
+
+    const Tensor* current = &hidden_a;
+    Tensor* next = &hidden_b;
+
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        BatchDecodeForwardContext layer_context = context;
+        layer_context.layer_idx = static_cast<int64_t>(i);
+
+        layers_[i].forward_decode_batch(
+            *current,
+            layer_context,
+            *next
+        );
+
+        if (current == &hidden_a) {
+            current = &hidden_b;
+            next = &hidden_a;
+        } else {
+            current = &hidden_a;
+            next = &hidden_b;
+        }
+    }
+
+    norm_.forward(*current, hidden_states);
+}
+
 Qwen3ForCausalLM::Qwen3ForCausalLM(const ModelConfig& config)
     : config_(config),
       model_(config),
@@ -1014,6 +1497,82 @@ void Qwen3ForCausalLM::forward(
     );
 
     model_.forward(input_ids, context, hidden_states);
+
+    lm_head_.forward(hidden_states, logits);
+}
+
+void Qwen3ForCausalLM::forward_decode_batch(
+    const Tensor& input_ids,
+    const BatchDecodeForwardContext& context,
+    Tensor& logits
+) const {
+    if (!initialized()) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM::forward_decode_batch called before weights are initialized"
+        );
+    }
+
+    if (input_ids.dtype() != DType::INT32) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM batch decode input_ids must be INT32"
+        );
+    }
+
+    if (logits.dtype() != DType::FP32) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM batch decode logits must be FP32"
+        );
+    }
+
+    if (input_ids.shape().size() != 1 ||
+        logits.shape().size() != 2) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM batch decode tensor rank mismatch"
+        );
+    }
+
+    const int64_t batch_size = input_ids.shape()[0];
+
+    if (context.batch_size != batch_size ||
+        batch_size <= 0) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM batch decode batch_size mismatch"
+        );
+    }
+
+    if (logits.shape()[0] != batch_size ||
+        logits.shape()[1] != config_.vocab_size) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM batch decode logits shape mismatch"
+        );
+    }
+
+    if (context.position_ids == nullptr) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM batch decode position_ids is null"
+        );
+    }
+
+    if (input_ids.device() != logits.device() ||
+        context.position_ids->device() != input_ids.device()) {
+        throw std::runtime_error(
+            "Qwen3ForCausalLM batch decode tensors must be on same device"
+        );
+    }
+
+    const Device device = input_ids.device();
+
+    Tensor hidden_states(
+        {batch_size, config_.hidden_size},
+        DType::FP32,
+        device
+    );
+
+    model_.forward_decode_batch(
+        input_ids,
+        context,
+        hidden_states
+    );
 
     lm_head_.forward(hidden_states, logits);
 }

@@ -33,6 +33,7 @@ struct Args {
     bool use_paged_kv_cache = false;
     int64_t page_size = 16;
     bool benchmark_interleaved = false;
+    bool benchmark_batch_decode = false;
 };
 
 Args parse_args(int argc, char** argv);
