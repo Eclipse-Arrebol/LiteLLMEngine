@@ -19,12 +19,13 @@ using namespace lite_llm;
 
 static Tensor make_float_tensor(
     const std::vector<int64_t>& shape,
-    const std::vector<float>& values
+    const std::vector<float>& values,
+    Device device = Device::CPU
 ) {
     Tensor tensor(
         shape,
         DType::FP32,
-        Device::CPU
+        device
     );
 
     assert(tensor.numel() == values.size());
@@ -39,7 +40,8 @@ static Tensor make_float_tensor(
 
 static Tensor make_constant_weight(
     const std::vector<int64_t>& shape,
-    float value
+    float value,
+    Device device = Device::CPU
 ) {
     int64_t numel = 1;
 
@@ -54,14 +56,16 @@ static Tensor make_constant_weight(
 
     return make_float_tensor(
         shape,
-        values
+        values,
+        device
     );
 }
 
 static Tensor make_sequential_weight(
     const std::vector<int64_t>& shape,
     float scale = 0.01f,
-    float bias = 0.0f
+    float bias = 0.0f,
+    Device device = Device::CPU
 ) {
     int64_t numel = 1;
 
@@ -81,7 +85,8 @@ static Tensor make_sequential_weight(
 
     return make_float_tensor(
         shape,
-        values
+        values,
+        device
     );
 }
 
@@ -109,7 +114,7 @@ static ModelConfig make_tiny_config() {
     return config;
 }
 
-static Qwen3ForCausalLM make_tiny_model() {
+static Qwen3ForCausalLM make_tiny_model(Device device = Device::CPU) {
     const ModelConfig config = make_tiny_config();
 
     Qwen3ForCausalLM model(config);
@@ -121,7 +126,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         make_sequential_weight(
             {config.vocab_size, config.hidden_size},
             0.02f,
-            0.01f
+            0.01f,
+            device
         )
     );
 
@@ -129,7 +135,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         "model.layers.0.input_layernorm.weight",
         make_constant_weight(
             {config.hidden_size},
-            1.0f
+            1.0f,
+            device
         )
     );
 
@@ -137,7 +144,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         "model.layers.0.post_attention_layernorm.weight",
         make_constant_weight(
             {config.hidden_size},
-            1.0f
+            1.0f,
+            device
         )
     );
 
@@ -146,7 +154,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         make_sequential_weight(
             {config.num_attention_heads * config.head_dim, config.hidden_size},
             0.015f,
-            0.0f
+            0.0f,
+            device
         )
     );
 
@@ -155,7 +164,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         make_sequential_weight(
             {config.num_key_value_heads * config.head_dim, config.hidden_size},
             0.013f,
-            0.0f
+            0.0f,
+            device
         )
     );
 
@@ -164,7 +174,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         make_sequential_weight(
             {config.num_key_value_heads * config.head_dim, config.hidden_size},
             0.017f,
-            0.0f
+            0.0f,
+            device
         )
     );
 
@@ -173,7 +184,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         make_sequential_weight(
             {config.hidden_size, config.num_attention_heads * config.head_dim},
             0.011f,
-            0.0f
+            0.0f,
+            device
         )
     );
 
@@ -181,7 +193,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         "model.layers.0.self_attn.q_norm.weight",
         make_constant_weight(
             {config.head_dim},
-            1.0f
+            1.0f,
+            device
         )
     );
 
@@ -189,7 +202,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         "model.layers.0.self_attn.k_norm.weight",
         make_constant_weight(
             {config.head_dim},
-            1.0f
+            1.0f,
+            device
         )
     );
 
@@ -198,7 +212,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         make_sequential_weight(
             {config.intermediate_size, config.hidden_size},
             0.012f,
-            0.0f
+            0.0f,
+            device
         )
     );
 
@@ -207,7 +222,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         make_sequential_weight(
             {config.intermediate_size, config.hidden_size},
             0.014f,
-            0.0f
+            0.0f,
+            device
         )
     );
 
@@ -216,7 +232,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         make_sequential_weight(
             {config.hidden_size, config.intermediate_size},
             0.016f,
-            0.0f
+            0.0f,
+            device
         )
     );
 
@@ -224,7 +241,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         "model.norm.weight",
         make_constant_weight(
             {config.hidden_size},
-            1.0f
+            1.0f,
+            device
         )
     );
 
@@ -233,7 +251,8 @@ static Qwen3ForCausalLM make_tiny_model() {
         make_sequential_weight(
             {config.vocab_size, config.hidden_size},
             0.018f,
-            0.0f
+            0.0f,
+            device
         )
     );
 
@@ -333,7 +352,7 @@ static void test_single_request_matches_contiguous_kv(
               << (device == Device::CPU ? "cpu" : "cuda")
               << std::endl;
 
-    Qwen3ForCausalLM model = make_tiny_model();
+    Qwen3ForCausalLM model = make_tiny_model(device);
 
     const std::vector<int32_t> prompt_ids = {1, 2, 3};
     const int64_t max_new_tokens = 4;
@@ -379,7 +398,7 @@ static void test_max_new_tokens_one(
               << (device == Device::CPU ? "cpu" : "cuda")
               << std::endl;
 
-    Qwen3ForCausalLM model = make_tiny_model();
+    Qwen3ForCausalLM model = make_tiny_model(device);
 
     const std::vector<int32_t> prompt_ids = {4, 5};
     const int64_t max_new_tokens = 1;
@@ -413,7 +432,7 @@ static void test_two_requests_interleaved(
               << (device == Device::CPU ? "cpu" : "cuda")
               << std::endl;
 
-    Qwen3ForCausalLM model = make_tiny_model();
+    Qwen3ForCausalLM model = make_tiny_model(device);
 
     const std::vector<int32_t> prompt0 = {1, 2, 3};
     const std::vector<int32_t> prompt1 = {4, 5};
@@ -539,7 +558,7 @@ static void test_multi_turn_conversation(
               << (device == Device::CPU ? "cpu" : "cuda")
               << std::endl;
 
-    Qwen3ForCausalLM model = make_tiny_model();
+    Qwen3ForCausalLM model = make_tiny_model(device);
 
     GreedyGenerateOptions options =
         make_options(
