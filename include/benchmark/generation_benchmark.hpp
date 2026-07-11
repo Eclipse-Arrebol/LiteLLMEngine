@@ -1,7 +1,7 @@
 #pragma once
 
+#include "core/device.hpp"
 #include "model/qwen3.hpp"
-
 
 #include <cstdint>
 #include <vector>
@@ -13,8 +13,20 @@ struct GenerationBenchmarkOptions {
     int64_t max_new_tokens = 32;
     int32_t warmup_requests = 1;
     int32_t eos_token_id = -1;
+
     bool verbose = false;
+
+    // 普通连续 KV cache
     bool use_kv_cache = false;
+
+    // Paged KV cache
+    bool use_paged_kv_cache = false;
+
+    // 是否在同一个 PagedGenerateEngine 里跑多个 request
+    bool interleaved = false;
+
+    int64_t page_size = 16;
+
     Device device = Device::CUDA;
 };
 
@@ -29,6 +41,10 @@ struct GenerationBenchmarkResult {
     double ms_per_token = 0.0;
 
     bool use_kv_cache = false;
+    bool use_paged_kv_cache = false;
+    bool interleaved = false;
+
+    int64_t page_size = 16;
 };
 
 GenerationBenchmarkResult benchmark_generate_greedy(

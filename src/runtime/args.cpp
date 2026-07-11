@@ -68,8 +68,9 @@ void print_usage(const char* program) {
         << "  --device <str>         Device, e.g. cpu, cuda, cuda:0\n"
         << "  -h, --help             Show this help message\n"
         << "  --eos-token-id <int>  Stop generation when this token id is generated\n";
+        std::cout << "  --use-paged-kv-cache          Enable paged KV cache generation\n";
+        std::cout << "  --page-size <N>               Paged KV cache page size, default 16\n";  
 }
-
 /**
  * @brief 解析输入参数
  * 
@@ -114,7 +115,13 @@ Args parse_args(int argc, char** argv) {
             args.benchmark_warmup = std::stoi(get_arg_value(i, argc, argv, arg));
         } else if (arg == "--use-kv-cache") {
             args.use_kv_cache = true;
-        } else {
+        } else if (arg == "--use-paged-kv-cache") {
+            args.use_paged_kv_cache = true;
+        } else if (arg == "--page-size" || starts_with(arg, "--page-size=")) {
+            args.page_size = std::stoll(get_arg_value(i, argc, argv, arg));
+        } else if (arg == "--benchmark-interleaved") {
+            args.benchmark_interleaved = true;}
+        else {
             throw std::runtime_error("Unknown argument: " + arg);
         }
     }

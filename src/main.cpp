@@ -2,6 +2,7 @@
 #include "runtime/model_downloader.hpp"
 #include "runtime/token_ids.hpp"
 #include "runtime/generation.hpp"
+#include "engine/paged_generate_engine.hpp"
 
 #include "model/model_config.hpp"
 #include "model/qwen3.hpp"
@@ -46,9 +47,28 @@ int main(int argc, char** argv) {
         std::cout << "  benchmark_requests:       " << args.benchmark_requests << "\n";
         std::cout << "  benchmark_warmup:       " << args.benchmark_warmup << "\n";
         std::cout << "  use_kv_cache:       " << args.use_kv_cache << "\n";
+        std::cout << "  use_paged_kv_cache:       " << args.use_paged_kv_cache << "\n";
+        std::cout << "  page_size:       " << args.page_size << "\n";
+        std::cout << "  benchmark_interleaved:    " << args.benchmark_interleaved << "\n";
 
         
         std::cout << "\nLoading model metadata...\n";
+
+        if (args.use_kv_cache && args.use_paged_kv_cache) {
+            throw std::runtime_error(
+                "Cannot enable both --use-kv-cache and --use-paged-kv-cache"
+            );
+        }
+
+        if (args.page_size <= 0) {
+            throw std::runtime_error("--page-size must be positive");
+        }
+
+        if (args.benchmark_interleaved && !args.use_paged_kv_cache) {
+            throw std::runtime_error(
+                "--benchmark-interleaved requires --use-paged-kv-cache"
+            );
+        }
 
         auto model_files = lite_llm::ensure_model_files(args.model);
         auto model_config = lite_llm::load_model_config(model_files.config_path);
@@ -159,16 +179,47 @@ int main(int argc, char** argv) {
             bench_options.eos_token_id = args.eos_token_id.value_or(-1);
             bench_options.device = device;
             bench_options.verbose = false;
+
             bench_options.use_kv_cache = args.use_kv_cache;
+            bench_options.use_paged_kv_cache = args.use_paged_kv_cache;
+            bench_options.interleaved = args.benchmark_interleaved;
+            bench_options.page_size = args.page_size;
 
             std::cout << "\nRunning generation benchmark...\n";
-            std::cout << "  Mode:            "
-                    << (bench_options.use_kv_cache ? "KV cache" : "No KV cache")
+
+            std::cout << "  Mode:            ";
+
+            if (bench_options.use_paged_kv_cache) {
+                if (bench_options.interleaved) {
+                    std::cout << "Paged KV cache interleaved\n";
+                } else {
+                    std::cout << "Paged KV cache\n";
+                }
+
+                std::cout << "  Page size:       "
+                        << bench_options.page_size
+                        << "\n";
+            } else if (bench_options.use_kv_cache) {
+                std::cout << "KV cache\n";
+            } else {
+                std::cout << "No KV cache\n";
+            }
+
+            std::cout << "  Requests:        "
+                    << bench_options.num_requests
                     << "\n";
-            std::cout << "  Requests:        " << bench_options.num_requests << "\n";
-            std::cout << "  Warmup requests: " << bench_options.warmup_requests << "\n";
-            std::cout << "  Prompt tokens:   " << input_ids.size() << "\n";
-            std::cout << "  Max new tokens:  " << bench_options.max_new_tokens << "\n";
+
+            std::cout << "  Warmup requests: "
+                    << bench_options.warmup_requests
+                    << "\n";
+
+            std::cout << "  Prompt tokens:   "
+                    << input_ids.size()
+                    << "\n";
+
+            std::cout << "  Max new tokens:  "
+                    << bench_options.max_new_tokens
+                    << "\n";
 
             const lite_llm::GenerationBenchmarkResult bench_result =
                 lite_llm::benchmark_generate_greedy(
@@ -177,7 +228,9 @@ int main(int argc, char** argv) {
                     bench_options
                 );
 
-            lite_llm::print_generation_benchmark_result(bench_result);
+            lite_llm::print_generation_benchmark_result(
+                bench_result
+            );
 
             return 0;
         }
@@ -190,18 +243,47 @@ int main(int argc, char** argv) {
         
         std::cout << "\nGenerating...\n";
 
-        const std::vector<int32_t> generated_ids =
-            args.use_kv_cache
-                ? lite_llm::generate_greedy_with_kv_cache(
-                    model,
+        std::vector<int32_t> generated_ids;
+
+        if (args.use_paged_kv_cache) {
+            const int64_t max_total_tokens =
+                static_cast<int64_t>(input_ids.size()) +
+                gen_options.max_new_tokens +
+                16;
+
+            lite_llm::PagedGenerateEngine engine(
+                model,
+                gen_options,
+                max_total_tokens,
+                args.page_size
+            );
+
+            const int64_t request_id =
+                engine.add_request(
                     input_ids,
-                    gen_options
-                )
-                : lite_llm::generate_greedy(
+                    gen_options.max_new_tokens,
+                    gen_options.eos_token_id
+                );
+
+            generated_ids =
+                engine.generate_until_finished(request_id);
+
+            engine.release_request(request_id);
+        } else if (args.use_kv_cache) {
+            generated_ids =
+                lite_llm::generate_greedy_with_kv_cache(
                     model,
                     input_ids,
                     gen_options
                 );
+        } else {
+            generated_ids =
+                lite_llm::generate_greedy(
+                    model,
+                    input_ids,
+                    gen_options
+                );
+        }
 
         std::vector<int32_t> new_ids;
 

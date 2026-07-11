@@ -28,6 +28,11 @@ struct Args {
 
     //kv cache 相关参数
     bool use_kv_cache = false;
+
+    //paged_kv_cache 相关参数
+    bool use_paged_kv_cache = false;
+    int64_t page_size = 16;
+    bool benchmark_interleaved = false;
 };
 
 Args parse_args(int argc, char** argv);
